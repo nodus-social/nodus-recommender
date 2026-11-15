@@ -682,7 +682,7 @@ pub async fn personal_candidates(
         ),
         shared AS (
             SELECT peer.followee_id AS account_id,
-                   LEAST(0.90, 0.25 + 0.08 * count(*))::real AS affinity
+                   LEAST(0.90, 0.25 + 0.08 * count(*))::double precision AS affinity
             FROM followed AS mine
             JOIN follow_edge AS peer ON peer.follower_id = mine.account_id
             WHERE peer.followee_id <> (SELECT account_id FROM me)
@@ -695,7 +695,7 @@ pub async fn personal_candidates(
         ),
         acted AS (
             SELECT coalesce(item.account_id, status.account_id) AS account_id,
-                   LEAST(0.95, 0.50 + 0.05 * count(*))::real AS affinity
+                   LEAST(0.95, 0.50 + 0.05 * count(*))::double precision AS affinity
             FROM interaction_event AS event
             JOIN recommendation_item AS item ON item.id = event.item_id
             LEFT JOIN status ON status.id = item.status_id
@@ -714,23 +714,29 @@ pub async fn personal_candidates(
             GROUP BY account_id
         ),
         ranked AS (
-            SELECT s.id AS status_id,
-                   s.created_at,
-                   s.content,
-                   s.url,
-                   coalesce(s.media, '[]'::jsonb) AS media,
-                   s.sensitive,
-                   coalesce(s.spoiler_text, '') AS spoiler_text,
-                   coalesce(s.emojis, '[]'::jsonb) AS emojis,
-                   a.id AS account_id,
-                   a.instance_host,
-                   a.acct,
-                   coalesce(nullif(a.display_name, ''), a.acct) AS account_display_name,
-                   coalesce(a.avatar_url, '') AS account_avatar_url,
+            SELECT s.id                                                   AS status_id,
+                   coalesce(s.remote_id, s.mastodon_id::text)             AS status_remote_id,
+                   s.account_id                                           AS account_id,
+                   best.affinity::double precision                        AS affinity,
+                   coalesce(s.content, '')                                AS content,
                    s.favourites_count,
                    s.reblogs_count,
                    s.replies_count,
-                   best.affinity,
+                   s.created_at                                           AS published_at,
+                   s.in_reply_to_id IS NOT NULL                           AS is_reply,
+                   a.remote_id                                            AS account_remote_id,
+                   a.acct::text                                           AS account_acct,
+                   a.display_name                                         AS account_display_name,
+                   a.avatar_url                                           AS account_avatar_url,
+                   a.followers_count                                      AS account_followers_count,
+                   a.instance_host::text                                  AS instance_host,
+                   a.instance_host::text                                  AS account_instance_host,
+                   a.mastodon_id                                          AS account_mastodon_id,
+                   s.url,
+                   coalesce(s.media, '[]'::jsonb)                         AS media,
+                   s.sensitive,
+                   coalesce(s.spoiler_text, '')                           AS spoiler_text,
+                   coalesce(s.emojis, '[]'::jsonb)                        AS emojis,
                    row_number() OVER (
                        PARTITION BY a.id
                        ORDER BY s.created_at DESC
@@ -754,13 +760,32 @@ pub async fn personal_candidates(
                     AND event.kind IN ('dismiss', 'not_interested')
               )
         )
-        SELECT status_id, created_at, content, url, media, sensitive, spoiler_text,
-               emojis, account_id, instance_host, acct, account_display_name,
-               account_avatar_url, favourites_count, reblogs_count, replies_count,
-               affinity
+        SELECT status_id,
+               status_remote_id,
+               account_id,
+               affinity,
+               content,
+               favourites_count,
+               reblogs_count,
+               replies_count,
+               published_at,
+               is_reply,
+               account_remote_id,
+               account_acct,
+               account_display_name,
+               account_avatar_url,
+               account_followers_count,
+               instance_host,
+               account_instance_host,
+               account_mastodon_id,
+               url,
+               media,
+               sensitive,
+               spoiler_text,
+               emojis
         FROM ranked
         WHERE position <= 2
-        ORDER BY affinity DESC, created_at DESC
+        ORDER BY affinity DESC, published_at DESC
         LIMIT $2
         ",
     )
