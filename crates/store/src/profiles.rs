@@ -203,7 +203,8 @@ pub async fn mark_fetched(pool: &PgPool, account_id: i64) -> Result<(), sqlx::Er
 /// Propagates [`sqlx::Error`].
 pub async fn needing_graph(pool: &PgPool, limit: i64) -> Result<Vec<CrawlTarget>, sqlx::Error> {
     sqlx::query_as::<_, CrawlTarget>(
-        "SELECT DISTINCT account.id, account.instance_host, account.mastodon_id \
+        "SELECT DISTINCT account.id, account.instance_host::text AS instance_host, \
+         account.mastodon_id \
          FROM account \
          WHERE account.follows_private = false \
            AND account.moved_to_account_id IS NULL \

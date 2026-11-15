@@ -54,6 +54,7 @@ fn status(id: &str, visibility: Visibility) -> Status {
         bookmarked: false,
         reblog: None,
         in_reply_to_id: None,
+        language: None,
         emojis: Vec::new(),
     }
 }
