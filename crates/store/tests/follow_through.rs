@@ -106,9 +106,11 @@ async fn counters_count_impressions_and_follows_per_account(pool: PgPool) {
     let report = follow_through::recompute(&pool).await.expect("recompute");
     assert_eq!(report.accounts, 2, "two accounts were recommended");
     assert_eq!(report.pruned, 0, "nothing to forget yet");
-    let expected = report.expected_rate.expect("one follow out of five events");
+    let expected = report
+        .expected_rate
+        .expect("one follow out of four impressions");
     assert!(
-        (expected - 0.2).abs() < 1e-9,
+        (expected - 0.25).abs() < 1e-9,
         "the baseline is follows over impressions, got {expected}"
     );
 
@@ -127,7 +129,7 @@ async fn counters_count_impressions_and_follows_per_account(pool: PgPool) {
         "one follow in two impressions"
     );
     assert!(
-        (alice_row.expected_rate.expect("a baseline was stored") - 0.2).abs() < 1e-9,
+        (alice_row.expected_rate.expect("a baseline was stored") - 0.25).abs() < 1e-9,
         "the baseline is stored with the row"
     );
 
@@ -226,4 +228,102 @@ fn an_account_that_was_never_shown_has_no_rate() {
         expected_rate: None,
     };
     assert!((seen_once.observed_rate().expect("it was shown once") - 0.25).abs() < 1e-9);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn recompute_skips_accounts_without_impressions_and_clamps_follows(pool: PgPool) {
+    users::ensure_instance(&pool, "home.test")
+        .await
+        .expect("ensure the home instance");
+    users::ensure_instance(&pool, "remote.test")
+        .await
+        .expect("ensure the remote instance");
+    let me = users::upsert(&pool, "home.test", 1, "me")
+        .await
+        .expect("create first user");
+    let other = users::upsert(&pool, "home.test", 2, "other")
+        .await
+        .expect("create second user");
+
+    accounts::upsert_many(
+        &pool,
+        &[
+            new_account("home.test", 1, "me"),
+            new_account("home.test", 2, "other"),
+            new_account("remote.test", 10, "aged"),
+            new_account("remote.test", 11, "overfollowed"),
+        ],
+    )
+    .await
+    .expect("seed accounts");
+
+    let aged = accounts::find_id(&pool, "remote.test", 10)
+        .await
+        .expect("read account id")
+        .expect("aged exists");
+    let overfollowed = accounts::find_id(&pool, "remote.test", 11)
+        .await
+        .expect("read account id")
+        .expect("overfollowed exists");
+
+    // `aged` had a stale row whose impression aged past the 90-day cutoff,
+    // leaving only a fresh follow event inside the window.
+    sqlx::query(
+        "INSERT INTO account_follow_through (account_id, impressions, follows, distinct_users) \
+         VALUES ($1, 3, 1, 1)",
+    )
+    .bind(aged)
+    .execute(&pool)
+    .await
+    .expect("seed stale row");
+    let aged_item = item(&pool, me.id, aged).await;
+    event(&pool, me.id, aged_item, "impression", 120).await;
+    event(&pool, me.id, aged_item, "follow", 5).await;
+
+    // Without any impressions in the window, expected_rate must be None.
+    assert_eq!(
+        follow_through::expected_rate(&pool)
+            .await
+            .expect("expected_rate with only orphan follow"),
+        None
+    );
+
+    // `overfollowed` has 1 impression and 2 follows inside the window.
+    let over_item_me = item(&pool, me.id, overfollowed).await;
+    let over_item_other = item(&pool, other.id, overfollowed).await;
+    event(&pool, me.id, over_item_me, "impression", 1).await;
+    event(&pool, me.id, over_item_me, "follow", 1).await;
+    event(&pool, other.id, over_item_other, "follow", 1).await;
+
+    let report = follow_through::recompute(&pool)
+        .await
+        .expect("recompute must not violate CHECK constraints");
+    assert_eq!(report.accounts, 1, "only overfollowed has impressions");
+    assert_eq!(report.pruned, 1, "aged row without impressions is pruned");
+    let rate = report.expected_rate.expect("baseline exists");
+    assert!(
+        (0.0..=1.0).contains(&rate),
+        "expected_rate must satisfy rate_sane CHECK constraint, got {rate}"
+    );
+    assert!(
+        (rate - 1.0).abs() < 1e-9,
+        "clamped follows (1) over impressions (1) = 1.0, got {rate}"
+    );
+
+    assert!(
+        follow_through::load(&pool, aged)
+            .await
+            .expect("load aged")
+            .is_none(),
+        "account with zero impressions must not remain in account_follow_through"
+    );
+    let over_row = follow_through::load(&pool, overfollowed)
+        .await
+        .expect("load overfollowed")
+        .expect("overfollowed row exists");
+    assert_eq!(over_row.impressions, 1);
+    assert_eq!(
+        over_row.follows, 1,
+        "follows must be clamped to impressions"
+    );
 }
