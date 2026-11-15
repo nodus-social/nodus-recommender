@@ -8,14 +8,17 @@
 use core::future::Future;
 use core::pin::Pin;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
+use nodus_cache::Budget;
 use nodus_client_core::InstanceApi;
 use nodus_client_core::model::{PageParams, StreamKind};
 use nodus_store::models::{Job, NewAccount};
 use nodus_store::{accounts, statuses, users};
 use sqlx::PgPool;
 
+use super::budget;
 use super::refresh_account::{RefreshConfig, fetch};
 use super::{Handler, JobError};
 
@@ -28,13 +31,19 @@ const PAGES: usize = 3;
 pub struct RefreshPublic {
     pool: PgPool,
     config: RefreshConfig,
+    budget: Arc<dyn Budget>,
 }
 
 impl RefreshPublic {
     /// A handler bound to one pool and one pacing config.
     #[must_use]
     pub fn new(pool: PgPool, config: RefreshConfig) -> Self {
-        Self { pool, config }
+        let budget = budget::resolve_budget(config.budget.clone(), config.effective_rps());
+        Self {
+            pool,
+            config,
+            budget,
+        }
     }
 }
 
@@ -60,14 +69,22 @@ impl Handler for RefreshPublic {
                     format!("no token is available for `{host}`; the public page waits"),
                 ));
             };
-            let api = fetch::transport(host, &pooled.access_token_enc, &self.config)?;
+            let (api, bucket) =
+                fetch::transport_with_bucket(host, &pooled.access_token_enc, &self.config)?;
             let mut statuses = Vec::new();
             let mut params = PageParams::first(self.config.page_size);
-            for _ in 0..PAGES {
-                let page = api
-                    .timeline(StreamKind::Federated, params)
-                    .await
-                    .map_err(classify)?;
+            for page_idx in 0..PAGES {
+                if page_idx > 0 {
+                    tokio::time::sleep(self.config.request_interval).await;
+                }
+                budget::acquire(&*self.budget, host, &bucket).await?;
+                let page = match api.timeline(StreamKind::Federated, params).await {
+                    Ok(page) => page,
+                    Err(error) => {
+                        budget::hold_if_rate_limited(&*self.budget, host, &error).await;
+                        return Err(classify(error));
+                    }
+                };
                 let next = page.next_max_id.clone();
                 statuses.extend(page.items);
                 let Some(next) = next else {
@@ -117,9 +134,10 @@ impl Handler for RefreshPublic {
                     batch.push(row);
                 }
             }
-            let written = statuses::upsert_many(&self.pool, &batch)
-                .await
-                .map_err(|error| database(&error))?;
+            let written =
+                statuses::upsert_many_for_days(&self.pool, &batch, self.config.post_retention_days)
+                    .await
+                    .map_err(|error| database(&error))?;
             tracing::info!(%host, fetched = batch.len(), written, "refresh_public finished");
             Ok(())
         })

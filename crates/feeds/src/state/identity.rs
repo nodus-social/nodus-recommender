@@ -44,11 +44,7 @@ pub trait VerificationCache: std::fmt::Debug + Send + Sync {
         identity: Identity,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 
-    /// Forget a fingerprint, for instance because the instance revoked the token.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the 401 path calls this once revocation is wired")
-    )]
+    /// Forget a fingerprint, for instance because the user deleted their account or revoked sync.
     fn forget<'a>(&'a self, key: &'a [u8; 32]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 

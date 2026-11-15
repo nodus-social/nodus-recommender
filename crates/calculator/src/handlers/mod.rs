@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use nodus_store::models::Job;
 
+mod budget;
 mod recompute_follow_through;
 mod recompute_similarity;
 mod refresh_account;

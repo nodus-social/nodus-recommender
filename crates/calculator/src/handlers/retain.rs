@@ -81,6 +81,7 @@ impl Handler for Retain {
                 recommendations = report.recommendations,
                 jobs = report.jobs,
                 batches = report.batches,
+                users = report.users,
                 "retention pass finished"
             );
             Ok(())

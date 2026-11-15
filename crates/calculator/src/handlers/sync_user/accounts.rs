@@ -6,7 +6,7 @@
 //! resolves the subject's own row (creating it when the follow list is empty),
 //! and [`optional_text`] is the small helper the follow rows share.
 
-use core::fmt::{self, Write as _};
+use core::fmt;
 use std::time::Duration;
 
 use nodus_client_core::InstanceApi;
@@ -53,15 +53,8 @@ impl Token {
     }
 
     /// The token half of the D23 budget key, `budget:<instance_host>:<hex>`.
-    ///
-    /// Written out by hand rather than with a hex crate: 32 bytes is one `write!`
-    /// loop, and the same bytes are also a Postgres `token_fingerprint`.
     pub(super) fn bucket(&self) -> String {
-        let mut hex = String::with_capacity(64);
-        for byte in self.fingerprint {
-            write!(hex, "{byte:02x}").ok();
-        }
-        hex
+        crate::handlers::budget::fingerprint_bucket(&self.fingerprint)
     }
 }
 

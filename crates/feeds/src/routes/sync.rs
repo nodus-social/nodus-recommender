@@ -14,7 +14,7 @@ use nodus_shared::{MeResponse, SyncSettings, SyncTokenRequest};
 use crate::auth::{Credentials, authenticate};
 use crate::error::ApiError;
 use crate::state::AppState;
-use nodus_store::crypto::fingerprint;
+use nodus_store::crypto::{fingerprint, verification_fingerprint};
 
 /// Start holding an encrypted copy of the caller's token and queue their first sync.
 ///
@@ -121,8 +121,8 @@ pub async fn delete_me(
 ) -> Result<Json<SyncSettings>, ApiError> {
     let credentials = Credentials::from_headers(&headers)?;
     let caller = authenticate(&state, credentials).await?;
-    nodus_store::users::clear_sync_token(&state.pool, caller.user.id).await?;
-    nodus_store::users::soft_delete(&state.pool, caller.user.id).await?;
+    nodus_store::users::delete_account(&state.pool, caller.user.id).await?;
+    evict_identity(&state, &caller.credentials).await;
     tracing::info!(user = %caller.user.acct, "user deleted");
     Ok(Json(SyncSettings {
         sync_enabled: false,
@@ -136,15 +136,18 @@ async fn stop_sync(
     telemetry_opt_in: bool,
 ) -> Result<Json<SyncSettings>, ApiError> {
     let caller = authenticate(state, credentials).await?;
-    nodus_store::users::clear_sync_token(&state.pool, caller.user.id).await?;
-    if !telemetry_opt_in {
-        nodus_store::users::set_telemetry_opt_in(&state.pool, caller.user.id, false).await?;
-    }
+    nodus_store::users::revoke_sync(&state.pool, caller.user.id, !telemetry_opt_in).await?;
+    evict_identity(state, &caller.credentials).await;
     tracing::info!(user = %caller.user.acct, "background sync disabled");
     Ok(Json(SyncSettings {
         sync_enabled: false,
         telemetry_opt_in: telemetry_opt_in && caller.user.telemetry_opt_in,
     }))
+}
+
+async fn evict_identity(state: &AppState, credentials: &Credentials) {
+    let key = verification_fingerprint(&credentials.instance_host, credentials.token.expose());
+    state.identities.forget(&key).await;
 }
 
 /// What the client needs in order to send the user to their instance.
@@ -425,4 +428,298 @@ fn encode_component(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::state::Identity;
+    use axum::http::{HeaderValue, header};
+    use nodus_store::models::NewAccount;
+    use nodus_store::{accounts, jobs, users};
+    use sqlx::PgPool;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    fn test_config() -> Config {
+        Config {
+            database_url: String::new(),
+            listen_addr: "127.0.0.1:0".parse().expect("valid addr"),
+            web_origins: Vec::new(),
+            public_base_url: "http://127.0.0.1:3000".to_owned(),
+            sync_enabled: true,
+            max_connections: 1,
+            replicas: 1,
+            redis_url: None,
+            verify_cache_seconds: 600,
+            verify_cache_capacity: 64,
+            og_cache_seconds: 600,
+            connect_timeout: Duration::from_secs(5),
+            token_enc_key: None,
+        }
+    }
+
+    async fn seed_derived_rows(pool: &PgPool, user_id: Uuid, peer_id: Uuid, host: &str) {
+        accounts::upsert_many(
+            pool,
+            &[NewAccount {
+                instance_host: host.to_owned(),
+                mastodon_id: 500,
+                remote_id: None,
+                acct: "candidate".to_owned(),
+                display_name: None,
+                followers_count: 10,
+                bot: false,
+                locked: false,
+                discoverable: None,
+                indexable: None,
+                noindex: None,
+            }],
+        )
+        .await
+        .expect("seed candidate account");
+        let candidate_id = accounts::find_id(pool, host, 500)
+            .await
+            .expect("find candidate")
+            .expect("candidate exists");
+
+        sqlx::query(
+            "INSERT INTO account_affinity (user_id, account_id, affinity, support) \
+             VALUES ($1, $2, 0.9, 1)",
+        )
+        .bind(user_id)
+        .bind(candidate_id)
+        .execute(pool)
+        .await
+        .expect("seed affinity");
+
+        sqlx::query(
+            "INSERT INTO user_similarity \
+                 (user_id, other_user_id, similarity, co_follow, co_fav, co_reply, reciprocity) \
+             VALUES ($1, $2, 0.5, 0.5, 0.0, 0.0, 0.0), \
+                    ($2, $1, 0.5, 0.5, 0.0, 0.0, 0.0)",
+        )
+        .bind(user_id)
+        .bind(peer_id)
+        .execute(pool)
+        .await
+        .expect("seed user_similarity");
+
+        sqlx::query(
+            "INSERT INTO reference_similarity (user_id, account_id, similarity, co_follow, coverage) \
+             VALUES ($1, $2, 0.6, 0.6, 0.9)",
+        )
+        .bind(user_id)
+        .bind(candidate_id)
+        .execute(pool)
+        .await
+        .expect("seed reference_similarity");
+
+        let item_id: i64 = sqlx::query_scalar(
+            "INSERT INTO recommendation_item \
+                 (user_id, account_id, kind, score, reason, model_version) \
+             VALUES ($1, $2, 'account', 0.9, '{}'::jsonb, 0) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(candidate_id)
+        .fetch_one(pool)
+        .await
+        .expect("seed item");
+
+        sqlx::query(
+            "INSERT INTO interaction_event \
+                 (user_id, item_id, kind, client_ts, idempotency_key) \
+             VALUES ($1, $2, 'click', now(), $3)",
+        )
+        .bind(user_id)
+        .bind(item_id)
+        .bind(vec![1_u8; 32])
+        .execute(pool)
+        .await
+        .expect("seed interaction_event");
+
+        jobs::enqueue(pool, &jobs::NewJob::sync_user(&user_id))
+            .await
+            .expect("enqueue job");
+    }
+
+    async fn seed_user_with_derived_state(
+        pool: &PgPool,
+        host: &str,
+        mastodon_id: i64,
+        acct: &str,
+        token: &str,
+    ) -> (AppState, HeaderMap, Uuid, [u8; 32]) {
+        users::ensure_instance(pool, host).await.expect("instance");
+        let user = users::upsert(pool, host, mastodon_id, acct)
+            .await
+            .expect("user");
+        let peer = users::upsert(pool, host, mastodon_id + 1, "peer")
+            .await
+            .expect("peer");
+        users::set_sync_token(
+            pool,
+            user.id,
+            b"sealed-token",
+            &["read".to_owned()],
+            &fingerprint(token),
+        )
+        .await
+        .expect("set_sync_token");
+        users::set_telemetry_opt_in(pool, user.id, true)
+            .await
+            .expect("opt in");
+
+        seed_derived_rows(pool, user.id, peer.id, host).await;
+
+        let state = AppState::new(
+            pool.clone(),
+            test_config(),
+            Arc::new(nodus_cache::InMemoryCache::new()),
+        );
+        let key = verification_fingerprint(host, token);
+        state
+            .identities
+            .insert(
+                key,
+                Identity {
+                    instance_host: host.to_owned(),
+                    mastodon_account_id: mastodon_id,
+                    acct: acct.to_owned(),
+                },
+            )
+            .await;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("auth header"),
+        );
+        headers.insert(
+            axum::http::HeaderName::from_static("x-instance-host"),
+            HeaderValue::from_str(host).expect("host header"),
+        );
+
+        (state, headers, user.id, key)
+    }
+
+    async fn assert_user_derived_data_purged(
+        pool: &PgPool,
+        state: &AppState,
+        user_id: Uuid,
+        identity_key: &[u8; 32],
+    ) {
+        let affinity: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM account_affinity WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+                .expect("count affinity");
+        assert_eq!(affinity, 0);
+
+        let user_sim: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM user_similarity WHERE user_id = $1 OR other_user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("count user_similarity");
+        assert_eq!(user_sim, 0);
+
+        let ref_sim: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM reference_similarity WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+                .expect("count reference_similarity");
+        assert_eq!(ref_sim, 0);
+
+        let events: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM interaction_event WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+                .expect("count interaction_event");
+        assert_eq!(events, 0);
+
+        let pending_jobs: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM job \
+             WHERE subject_kind = 'user' AND subject_id = $1 AND status = 'pending'",
+        )
+        .bind(user_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("count pending jobs");
+        assert_eq!(pending_jobs, 0);
+
+        let cancelled_jobs: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM job \
+             WHERE subject_kind = 'user' AND subject_id = $1 AND status = 'cancelled'",
+        )
+        .bind(user_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("count cancelled jobs");
+        assert_eq!(cancelled_jobs, 1);
+
+        assert!(
+            state.identities.get(identity_key).await.is_none(),
+            "cached identity must be evicted"
+        );
+    }
+
+    #[sqlx::test(migrations = "../store/migrations")]
+    async fn delete_me_purges_derived_tables_cancels_jobs_and_evicts_identity(pool: PgPool) {
+        let (state, headers, user_id, key) =
+            seed_user_with_derived_state(&pool, "home.example", 10, "me", "tok-delete-me").await;
+
+        let Json(resp) = delete_me(State(state.clone()), headers)
+            .await
+            .expect("delete_me succeeds");
+        assert!(!resp.sync_enabled);
+        assert!(!resp.telemetry_opt_in);
+
+        let deleted_at: Option<time::OffsetDateTime> =
+            sqlx::query_scalar("SELECT deleted_at FROM app_user WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read deleted_at");
+        assert!(deleted_at.is_some());
+
+        assert_user_derived_data_purged(&pool, &state, user_id, &key).await;
+    }
+
+    #[sqlx::test(migrations = "../store/migrations")]
+    async fn delete_sync_token_purges_derived_tables_cancels_jobs_and_evicts_identity(
+        pool: PgPool,
+    ) {
+        let (state, headers, user_id, key) =
+            seed_user_with_derived_state(&pool, "home.example", 20, "me2", "tok-stop-sync").await;
+
+        let Json(resp) = delete_sync_token(State(state.clone()), headers)
+            .await
+            .expect("delete_sync_token succeeds");
+        assert!(!resp.sync_enabled);
+        assert!(!resp.telemetry_opt_in);
+
+        let (deleted_at, sync_enabled, telemetry_opt_in): (
+            Option<time::OffsetDateTime>,
+            bool,
+            bool,
+        ) = sqlx::query_as(
+            "SELECT deleted_at, sync_enabled, telemetry_opt_in FROM app_user WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read app_user");
+        assert!(deleted_at.is_none());
+        assert!(!sync_enabled);
+        assert!(!telemetry_opt_in);
+
+        assert_user_derived_data_purged(&pool, &state, user_id, &key).await;
+    }
 }

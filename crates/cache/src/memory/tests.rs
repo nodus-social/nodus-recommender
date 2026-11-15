@@ -44,6 +44,20 @@ async fn budget_refills_continuously() -> Result<(), CacheError> {
 }
 
 #[tokio::test]
+async fn budget_supports_fractional_rates() -> Result<(), CacheError> {
+    let budget = InMemoryBudget::with_rate(0.5, 1);
+    let start = Instant::now();
+
+    assert!(budget.acquire_at("example.social", "token", start)?);
+    assert!(!budget.acquire_at("example.social", "token", start)?);
+
+    // At 0.5 req/s, 1 second only accrues 0.5 tokens; 2 seconds accrues 1 full token.
+    assert!(!budget.acquire_at("example.social", "token", start + Duration::from_secs(1))?);
+    assert!(budget.acquire_at("example.social", "token", start + Duration::from_secs(2))?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_hold_refuses_every_bucket_on_the_host_until_it_expires() -> Result<(), CacheError> {
     let budget = InMemoryBudget::new(1, 5);
     let start = Instant::now();

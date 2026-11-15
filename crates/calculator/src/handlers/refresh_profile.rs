@@ -24,8 +24,10 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
+use nodus_cache::Budget;
 use nodus_client_core::model::{Account as InstanceAccount, LocalId, PageParams};
 use nodus_client_core::{Error as InstanceError, Instance, InstanceApi, SyncApi};
 use nodus_mastodon::HttpInstance;
@@ -35,7 +37,7 @@ use nodus_store::{accounts, affinity, users};
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
 
-use super::{Handler, JobError, SyncConfig};
+use super::{Handler, JobError, SyncConfig, budget};
 
 /// How many accounts sharing an edge are compared in one pass.
 const PEER_LIMIT: i64 = 200;
@@ -67,6 +69,7 @@ fn database(error: &sqlx::Error) -> JobError {
 pub struct RefreshProfile {
     pool: PgPool,
     config: SyncConfig,
+    budget: Arc<dyn Budget>,
 }
 
 /// The account row this handler needs, and nothing else.
@@ -83,7 +86,12 @@ impl RefreshProfile {
     /// A handler bound to one pool and one pacing config.
     #[must_use]
     pub fn new(pool: PgPool, config: SyncConfig) -> Self {
-        Self { pool, config }
+        let budget = budget::resolve_budget(config.budget.clone(), config.effective_rps());
+        Self {
+            pool,
+            config,
+            budget,
+        }
     }
 
     /// Reads the account, or `None` when it has been deleted since the job was queued.
@@ -98,32 +106,39 @@ impl RefreshProfile {
     }
 
     /// Resolves the account id to query on `origin`, persisting a newly looked-up `remote_id`.
+    /// Returns `(remote_id, made_network_request)`.
     async fn resolve_remote_id(
         &self,
         api: &HttpInstance,
+        host: &str,
+        bucket: &str,
         account_id: i64,
         user: &str,
         cached: Option<&str>,
-    ) -> Result<String, JobError> {
+    ) -> Result<(String, bool), JobError> {
         if let Some(remote_id) = cached.map(str::trim).filter(|id| !id.is_empty()) {
-            return Ok(remote_id.to_owned());
+            return Ok((remote_id.to_owned(), false));
         }
-        let remote = api
-            .account_lookup(user)
-            .await
-            .map_err(classify_origin_lookup)?;
+        budget::acquire(&*self.budget, host, bucket).await?;
+        let remote = match api.account_lookup(user).await {
+            Ok(remote) => remote,
+            Err(error) => {
+                budget::hold_if_rate_limited(&*self.budget, host, &error).await;
+                return Err(classify_origin_lookup(error));
+            }
+        };
         accounts::set_remote_id(&self.pool, account_id, &remote.id)
             .await
             .map_err(|error| database(&error))?;
-        Ok(remote.id)
+        Ok((remote.id, true))
     }
 
-    /// Picks the host, HTTP client, and account id for crawling `target`.
+    /// Picks the host, HTTP client, budget bucket, and account id for crawling `target`.
     async fn open_crawl_target(
         &self,
         target: &Target,
         account_id: i64,
-    ) -> Result<(String, HttpInstance, LocalId, bool), JobError> {
+    ) -> Result<(String, HttpInstance, String, LocalId, bool, bool), JobError> {
         let remote = remote_acct(&target.acct);
         let (host, secret) = if let Some((_, origin)) = remote {
             (origin.to_owned(), String::new())
@@ -153,23 +168,45 @@ impl RefreshProfile {
             (target.instance_host.clone(), secret)
         };
 
+        let bucket = budget::secret_bucket(&secret);
         let authority = format!("{}://{host}", self.config.scheme);
         let instance = Instance::parse(&authority).map_err(|error| {
             JobError::permanent(format!("`{host}` is not a usable instance: {error}"))
         })?;
         let api = HttpInstance::new(&instance, secret);
-        let me_id = if let Some((user, _)) = remote {
-            self.resolve_remote_id(&api, account_id, user, target.remote_id.as_deref())
-                .await?
+        let (me_id, did_lookup) = if let Some((user, _)) = remote {
+            self.resolve_remote_id(
+                &api,
+                &host,
+                &bucket,
+                account_id,
+                user,
+                target.remote_id.as_deref(),
+            )
+            .await?
         } else {
-            target.mastodon_id.to_string()
+            (target.mastodon_id.to_string(), false)
         };
-        Ok((host, api, LocalId(me_id), remote.is_some()))
+        Ok((
+            host,
+            api,
+            bucket,
+            LocalId(me_id),
+            remote.is_some(),
+            did_lookup,
+        ))
     }
 
     /// One page of the subject's follow list, as local edge targets.
     async fn crawl(&self, target: &Target, account_id: i64) -> Result<Vec<i64>, JobError> {
-        let (host, api, me, is_remote) = self.open_crawl_target(target, account_id).await?;
+        let (host, api, bucket, me, is_remote, did_lookup) =
+            self.open_crawl_target(target, account_id).await?;
+        let interval = self.config.request_interval();
+
+        if did_lookup {
+            tokio::time::sleep(interval).await;
+        }
+        budget::acquire(&*self.budget, &host, &bucket).await?;
 
         let page = match api
             .following(&me, PageParams::first(self.config.page_size))
@@ -188,10 +225,9 @@ impl RefreshProfile {
                 ));
             }
             Err(InstanceError::RateLimited { retry_after_s }) => {
-                return Err(JobError::retry(
-                    Duration::from_secs(u64::from(retry_after_s.max(1))),
-                    "the instance asked us to slow down",
-                ));
+                let delay = Duration::from_secs(u64::from(retry_after_s.max(1)));
+                budget::hold(&*self.budget, &host, delay).await;
+                return Err(JobError::retry(delay, "the instance asked us to slow down"));
             }
             Err(error) => {
                 return Err(JobError::retry(
@@ -201,10 +237,21 @@ impl RefreshProfile {
             }
         };
 
-        let followers = api
-            .account_followers(&me, PageParams::first(self.config.page_size))
-            .await
-            .ok();
+        tokio::time::sleep(interval).await;
+        let followers = if matches!(self.budget.acquire(&host, &bucket).await, Ok(true)) {
+            match api
+                .account_followers(&me, PageParams::first(self.config.page_size))
+                .await
+            {
+                Ok(page) => Some(page),
+                Err(error) => {
+                    budget::hold_if_rate_limited(&*self.budget, &host, &error).await;
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let batch: Vec<NewAccount> = page
             .items
             .iter()

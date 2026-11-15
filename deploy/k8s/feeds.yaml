@@ -40,6 +40,17 @@ spec:
               value: 0.0.0.0:3000
             - name: FEEDS_DB_MAX_CONNECTIONS
               value: "10"
+            # Multi-replica deployments must share verified-token caches via Redis;
+            # declaring FEEDS_REPLICAS > 1 ensures Config::validate() refuses startup
+            # if REDIS_URL is missing.
+            - name: FEEDS_REPLICAS
+              value: "2"
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: nodus-config
+                  key: redis-url
+                  optional: true
             - name: RUST_LOG
               value: info,nodus_feeds=info,sqlx=warn
             - name: DATABASE_URL

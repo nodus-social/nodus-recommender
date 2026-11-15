@@ -79,33 +79,37 @@ async fn main() -> ExitCode {
         }
     };
 
-    // Migrations are idempotent and shared with feeds; the calculator runs them too so
-    // it can start first in a fresh environment.
-    if let Err(error) = nodus_store::migrate(&pool).await {
-        error!(%error, "migrations failed");
-        return ExitCode::FAILURE;
-    }
-
     info!(worker = %config.worker_id, kinds = ?config.kinds, "starting nodus-calculator");
-    let refresh = RefreshConfig::new(sealer.clone(), config.max_rps_per_host);
-    let sync = SyncConfig::new(sealer, config.max_rps_per_host);
-    // One budget for the process, shared through Redis when it is configured: the
-    // per-host rate belongs to the instance we crawl, not to a replica. `validate`
-    // already refused a replica count above one without Redis.
+    let refresh = RefreshConfig::new(sealer.clone(), config.max_rps_per_host)
+        .with_budget_fraction(config.budget_fraction)
+        .with_post_retention_days(u32::from(config.post_retention_days));
+    let sync = SyncConfig::new(sealer, config.max_rps_per_host)
+        .with_budget_fraction(config.budget_fraction);
+    // One budget for the process, shared across all crawl handlers and through Redis
+    // when it is configured: the per-host rate belongs to the instance we crawl, not
+    // to a handler or replica. `validate` already refused replicas > 1 without Redis.
     let rate = sync.budget_rate();
-    let sync = if let Some(url) = config.redis_url.as_deref() {
-        match nodus_cache::RedisBudget::connect(url, rate).await {
-            Ok(budget) => sync.with_budget(std::sync::Arc::new(budget)),
-            Err(error) => {
-                error!(%error, "redis request budget is unusable");
-                return ExitCode::FAILURE;
+    let budget: std::sync::Arc<dyn nodus_cache::Budget> =
+        if let Some(url) = config.redis_url.as_deref() {
+            match nodus_cache::RedisBudget::connect(url, rate).await {
+                Ok(budget) => std::sync::Arc::new(budget),
+                Err(error) => {
+                    error!(%error, "redis request budget is unusable");
+                    return ExitCode::FAILURE;
+                }
             }
-        }
-    } else {
-        // `SyncUser` installs the in-process budget and warns once at startup that
-        // per-host budgets are per replica.
-        sync
-    };
+        } else {
+            tracing::warn!(
+                "no shared request budget configured; per-host budgets are per replica \
+             (set REDIS_URL to share them)"
+            );
+            std::sync::Arc::new(nodus_cache::InMemoryBudget::with_rate(
+                sync.effective_rps(),
+                5,
+            ))
+        };
+    let sync = sync.with_budget(budget.clone());
+    let refresh = refresh.with_budget(budget);
     // Retention windows come from configuration, so shortening one is a deploy,
     // not a code change; the handler reads them at construction and never again.
     let retention = nodus_store::retention::RetentionPolicy {
