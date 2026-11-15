@@ -19,7 +19,7 @@ const LAST_RANK: usize = explore::EXPLORE_LAST_RANK;
 pub(super) struct Plan {
     /// Number of leading candidates to take: `candidates[..head]`.
     pub head: usize,
-    /// Indices into `candidates` for the explore slots, ascending.
+    /// Indices into `candidates` for the explore slots, in page order.
     pub explore: Vec<usize>,
     /// Whether the candidate list held anything beyond this page.
     pub more: bool,

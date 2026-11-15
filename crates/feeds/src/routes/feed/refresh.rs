@@ -217,7 +217,6 @@ fn enforce_explore_instance_cap(plan: &mut page::Plan, diversified: &[(f64, Cand
             adjusted.push(chosen);
         }
     }
-    adjusted.sort_unstable();
     plan.explore = adjusted;
 }
 
@@ -452,5 +451,68 @@ mod tests {
             plan.explore[0], 55,
             "conflicting dup.test explore slot must be replaced"
         );
+    }
+
+    #[test]
+    fn enforce_explore_instance_cap_preserves_validated_order_across_multiple_slots() {
+        use crate::routes::feed::page;
+
+        let now = OffsetDateTime::now_utc();
+        let mut hosts: Vec<String> = (0..29).map(|i| format!("head{i:02}.test")).collect();
+        hosts.extend(
+            [
+                "a.test", "b.test", "b.test", "c.test", "c.test", "d.test", "d.test", "e.test",
+                "a.test",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        hosts.extend((38..50).map(|i| format!("mid{i:02}.test")));
+        hosts.extend(
+            [
+                "a.test", "a.test", "b.test", "b.test", "c.test", "c.test", "d.test", "d.test",
+                "f.test",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+
+        let diversified: Vec<(f64, Candidate)> = hosts
+            .into_iter()
+            .enumerate()
+            .map(|(i, host)| {
+                #[expect(clippy::cast_precision_loss, reason = "small test index")]
+                let score = 1.0 - (i as f64) * 0.005;
+                let id = i64::try_from(i + 1).expect("small test index");
+                (score, make_candidate(id, score, &host, now))
+            })
+            .collect();
+
+        let mut plan = Plan {
+            head: 38,
+            explore: vec![50, 51],
+            more: true,
+        };
+        enforce_explore_instance_cap(&mut plan, &diversified);
+        assert_eq!(
+            plan.explore,
+            vec![58, 51],
+            "replacement slot 58 must remain ahead of 51 so 51 stays outside the 29..=37 window"
+        );
+
+        let selected = page::select(&diversified, &plan);
+        assert_eq!(selected.len(), 40);
+        for (start, window) in selected.windows(INSTANCE_WINDOW).enumerate() {
+            let mut counts: HashMap<&str, usize> = HashMap::new();
+            for (_, c) in window {
+                *counts.entry(c.instance_host.as_str()).or_insert(0) += 1;
+            }
+            for (host, count) in counts {
+                assert!(
+                    count <= MAX_PER_INSTANCE,
+                    "window starting at {start} had {count} accounts from {host}"
+                );
+            }
+        }
     }
 }
