@@ -69,8 +69,8 @@ async fn post(
     age: Duration,
 ) -> i64 {
     sqlx::query_scalar::<_, i64>(
-        "INSERT INTO status (instance_host, mastodon_id, account_id, content, visibility, created_at) \
-         VALUES ($1, $2, $3, 'post ' || $2, $4, now() - ($5 * interval '1 second')) RETURNING id",
+        "INSERT INTO status (instance_host, mastodon_id, remote_id, account_id, content, visibility, created_at) \
+         VALUES ($1, $2, $2::text, $3, 'post ' || $2, $4, now() - ($5 * interval '1 second')) RETURNING id",
     )
     .bind(REMOTE)
     .bind(mastodon_id)
@@ -340,4 +340,123 @@ async fn hidden_accounts_stay_out_of_every_pool(pool: PgPool) {
             .expect("fallback")
             .is_empty()
     );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn personal_candidates_decodes_shared_and_acted_authors(pool: PgPool) {
+    let (user_id, me) = seed_me(&pool).await;
+    let peer_one = account(&pool, REMOTE, 50, "peer1").await;
+    let peer_two = account(&pool, REMOTE, 51, "peer2").await;
+    let shared_author = account(&pool, REMOTE, 52, "shared").await;
+    let acted_author = account(&pool, REMOTE, 53, "acted").await;
+
+    sqlx::query(
+        "UPDATE account \
+         SET remote_id = 'origin-52', display_name = 'Shared Author', \
+             avatar_url = 'https://remote.test/avatar.png', followers_count = 420 \
+         WHERE id = $1",
+    )
+    .bind(shared_author)
+    .execute(&pool)
+    .await
+    .expect("enrich shared_author");
+
+    // `me` follows two peers who both follow `shared_author`.
+    accounts::replace_follows(&pool, me, &[peer_one, peer_two], "server_sync")
+        .await
+        .expect("me follows peers");
+    accounts::replace_follows(&pool, peer_one, &[shared_author], "expansion")
+        .await
+        .expect("peer_one follows shared_author");
+    accounts::replace_follows(&pool, peer_two, &[shared_author], "expansion")
+        .await
+        .expect("peer_two follows shared_author");
+
+    // Three posts from shared_author (position <= 2 keeps the two newest).
+    let shared_oldest = post(&pool, 600, shared_author, "public", Duration::hours(5)).await;
+    let shared_mid = post(&pool, 601, shared_author, "public", Duration::hours(3)).await;
+    let shared_newest = post(&pool, 602, shared_author, "unlisted", Duration::hours(1)).await;
+    sqlx::query(
+        "UPDATE status \
+         SET remote_id = 'note-602', in_reply_to_id = 999, url = 'https://remote.test/@shared/602', \
+             favourites_count = 7, reblogs_count = 3, replies_count = 2, sensitive = true, \
+             spoiler_text = 'cw' \
+         WHERE id = $1",
+    )
+    .bind(shared_newest)
+    .execute(&pool)
+    .await
+    .expect("enrich shared_newest");
+
+    // User boosted a post by `acted_author` (keep nullable account fields NULL).
+    let acted_post = post(&pool, 610, acted_author, "public", Duration::hours(2)).await;
+    sqlx::query(
+        "WITH new_item AS ( \
+             INSERT INTO recommendation_item (user_id, status_id, kind, score, model_version) \
+             VALUES ($1, $2, 'post', 0.5, 0) RETURNING id \
+         ) \
+         INSERT INTO interaction_event (user_id, item_id, kind, client_ts, idempotency_key) \
+         SELECT $1, id, 'boost', now(), $3 FROM new_item",
+    )
+    .bind(user_id)
+    .bind(acted_post)
+    .bind(vec![7_u8; 32])
+    .execute(&pool)
+    .await
+    .expect("record boost event");
+
+    let rows = posts::personal_candidates(&pool, user_id, 10)
+        .await
+        .expect("decode personal_candidates rows");
+
+    let ids: Vec<i64> = rows.iter().map(|row| row.status_id).collect();
+    // `acted_author` has affinity 0.55 > `shared_author` 0.41; `shared_oldest` is dropped by position <= 2.
+    assert_eq!(ids, vec![acted_post, shared_newest, shared_mid]);
+    assert!(!ids.contains(&shared_oldest));
+
+    let acted_row = &rows[0];
+    assert!((acted_row.affinity - 0.55).abs() < 1e-6);
+    assert_eq!(acted_row.account_id, acted_author);
+    assert_eq!(acted_row.account_acct, "acted");
+    assert_eq!(acted_row.account_remote_id, None);
+    assert_eq!(acted_row.account_display_name, None);
+    assert_eq!(acted_row.account_avatar_url, None);
+    assert_eq!(acted_row.account_followers_count, 0);
+    assert_eq!(acted_row.account_instance_host, REMOTE);
+    assert_eq!(acted_row.account_mastodon_id, 53);
+    assert_eq!(acted_row.instance_host, REMOTE);
+    assert_eq!(acted_row.status_remote_id, "610");
+    assert!(!acted_row.is_reply);
+
+    let shared_row = &rows[1];
+    assert!((shared_row.affinity - 0.41).abs() < 1e-6);
+    assert_eq!(shared_row.status_remote_id, "note-602");
+    assert_eq!(shared_row.account_id, shared_author);
+    assert_eq!(shared_row.account_remote_id.as_deref(), Some("origin-52"));
+    assert_eq!(shared_row.content, "post 602");
+    assert_eq!(shared_row.favourites_count, 7);
+    assert_eq!(shared_row.reblogs_count, 3);
+    assert_eq!(shared_row.replies_count, 2);
+    assert!(shared_row.is_reply);
+    assert_eq!(shared_row.account_acct, "shared");
+    assert_eq!(
+        shared_row.account_display_name.as_deref(),
+        Some("Shared Author")
+    );
+    assert_eq!(
+        shared_row.account_avatar_url.as_deref(),
+        Some("https://remote.test/avatar.png")
+    );
+    assert_eq!(shared_row.account_followers_count, 420);
+    assert_eq!(shared_row.account_instance_host, REMOTE);
+    assert_eq!(shared_row.account_mastodon_id, 52);
+    assert_eq!(shared_row.instance_host, REMOTE);
+    assert_eq!(
+        shared_row.url.as_deref(),
+        Some("https://remote.test/@shared/602")
+    );
+    assert_eq!(shared_row.media, serde_json::json!([]));
+    assert!(shared_row.sensitive);
+    assert_eq!(shared_row.spoiler_text, "cw");
+    assert_eq!(shared_row.emojis, serde_json::json!([]));
 }
