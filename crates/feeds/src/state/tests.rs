@@ -22,6 +22,7 @@ fn poll<F: std::future::Future>(future: F) -> F::Output {
 
 fn identity(acct: &str) -> Identity {
     Identity {
+        instance_host: "example.social".to_owned(),
         mastodon_account_id: 1,
         acct: acct.to_owned(),
     }
@@ -186,5 +187,25 @@ async fn a_shared_error_is_a_miss_and_not_a_panic() {
         cache.local.len(),
         0,
         "a failed read must not remember anything"
+    );
+}
+
+#[tokio::test]
+async fn a_legacy_shared_entry_without_instance_host_is_treated_as_a_miss() {
+    let shared = Arc::new(CountingCache::new(false));
+    let cache = layered(Arc::clone(&shared));
+    let key = [4_u8; 32];
+    let legacy = br#"{"mastodon_account_id":109384,"acct":"victim"}"#;
+    shared
+        .set("verify:legacy", legacy, Duration::from_secs(60))
+        .await
+        .expect("fake cache always writes");
+
+    assert_eq!(cache.get(&key).await, None);
+    assert_eq!(shared.reads(), 1);
+    assert_eq!(
+        cache.local.len(),
+        0,
+        "an undecodable legacy entry must not populate local cache"
     );
 }
