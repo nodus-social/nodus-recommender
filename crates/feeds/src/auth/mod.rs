@@ -90,6 +90,12 @@ async fn verify_at_instance(
     state: &AppState,
     credentials: &Credentials,
 ) -> Result<Identity, ApiError> {
+    if !headers::is_plausible_host(&credentials.instance_host) {
+        return Err(ApiError::bad_request(
+            "invalid_instance_header",
+            "X-Instance-Host must be a bare host name such as mastodon.social",
+        ));
+    }
     let url = format!(
         "https://{}/api/v1/accounts/verify_credentials",
         credentials.instance_host

@@ -58,12 +58,24 @@ fn a_missing_instance_header_is_named() {
 }
 
 #[test]
-fn a_host_that_could_escape_the_url_is_rejected() {
+fn a_host_that_could_escape_the_url_or_target_internal_services_is_rejected() {
     for host in [
         "https://evil.example",
         "evil.example/path",
         "user@evil.example",
         "evil example",
+        "localhost",
+        "localhost:3000",
+        "localhost:8080",
+        "calculator.nodus.svc:8080",
+        "redis.nodus.svc",
+        "metadata.google.internal",
+        "printer.local",
+        "api.cluster.local",
+        "127.0.0.1",
+        "169.254.169.254",
+        "10.0.0.1",
+        "[::1]",
     ] {
         let error = Credentials::from_headers(&headers(&[
             ("authorization", "Bearer t"),
@@ -76,7 +88,7 @@ fn a_host_that_could_escape_the_url_is_rejected() {
 
 #[test]
 fn plausible_hosts_are_accepted() {
-    for host in ["mastodon.social", "localhost:3000", "social.example.org"] {
+    for host in ["mastodon.social", "social.example.org"] {
         assert!(is_plausible_host(host), "{host}");
     }
 }
@@ -102,13 +114,6 @@ fn test_config() -> Config {
         connect_timeout: Duration::from_secs(5),
         token_enc_key: None,
     }
-}
-
-fn unused_local_host() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local addr");
-    drop(listener);
-    addr.to_string()
 }
 
 async fn assert_rejected_with_cached_identity(
@@ -159,10 +164,10 @@ async fn cached_identity_from_evil_instance_cannot_authenticate_on_another_insta
     pool: sqlx::PgPool,
 ) {
     let token = "attacker-controlled-token";
-    let victim_host = unused_local_host();
+    let victim_host = "victim.invalid";
     // Simulate step 2 of the exploit: evil.example verified `token` as victim 109384.
     let evil_key = nodus_store::crypto::verification_fingerprint("evil.example", token);
-    assert_rejected_with_cached_identity(pool, &victim_host, token, evil_key, "evil.example").await;
+    assert_rejected_with_cached_identity(pool, victim_host, token, evil_key, "evil.example").await;
 }
 
 #[sqlx::test(migrations = "../store/migrations")]
@@ -170,11 +175,11 @@ async fn cached_identity_with_mismatched_instance_host_under_same_key_is_rejecte
     pool: sqlx::PgPool,
 ) {
     let token = "attacker-controlled-token";
-    let victim_host = unused_local_host();
+    let victim_host = "victim.invalid";
     // Defense-in-depth: even if the cache entry under the victim's key claims a
     // different instance_host, authenticate() must refuse it and re-verify.
-    let victim_key = nodus_store::crypto::verification_fingerprint(&victim_host, token);
-    assert_rejected_with_cached_identity(pool, &victim_host, token, victim_key, "evil.example")
+    let victim_key = nodus_store::crypto::verification_fingerprint(victim_host, token);
+    assert_rejected_with_cached_identity(pool, victim_host, token, victim_key, "evil.example")
         .await;
 }
 
@@ -186,15 +191,15 @@ async fn cached_identity_for_matching_instance_host_authenticates(pool: sqlx::Pg
         Arc::new(nodus_cache::InMemoryCache::new()),
     );
     let token = "legitimate-token";
-    let instance_host = unused_local_host();
+    let instance_host = "victim.invalid";
 
-    let key = nodus_store::crypto::verification_fingerprint(&instance_host, token);
+    let key = nodus_store::crypto::verification_fingerprint(instance_host, token);
     state
         .identities
         .insert(
             key,
             Identity {
-                instance_host: instance_host.clone(),
+                instance_host: instance_host.to_owned(),
                 mastodon_account_id: 109_384,
                 acct: "victim".to_owned(),
             },

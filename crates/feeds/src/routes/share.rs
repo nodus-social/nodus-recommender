@@ -9,6 +9,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
+use crate::host::is_plausible_host;
 use crate::og;
 use crate::state::AppState;
 
@@ -29,7 +30,7 @@ pub async fn short_link(
 ) -> Response {
     let app_url = app_url(&state);
 
-    if !plausible_host(&instance) || !plausible_id(&status_id) {
+    if !is_plausible_host(&instance) || !plausible_id(&status_id) {
         return html(StatusCode::NOT_FOUND, og::page_unavailable(&app_url), 60);
     }
 
@@ -68,21 +69,6 @@ fn app_url(state: &AppState) -> String {
         .first()
         .cloned()
         .unwrap_or_else(|| state.config.public_base_url.clone())
-}
-
-/// A host we are willing to interpolate into a URL.
-///
-/// The value arrives in a path segment and ends up in an outbound request, so the
-/// checks are about shape, not trust: no scheme, no path, no userinfo, no port, and
-/// no characters that could re-target the request.
-fn plausible_host(instance: &str) -> bool {
-    !instance.is_empty()
-        && instance.len() <= 255
-        && instance.contains('.')
-        && !instance.contains("..")
-        && instance
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
 }
 
 /// A status id we are willing to interpolate into a URL.
@@ -125,14 +111,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_host_with_a_path_or_scheme_is_refused() {
-        assert!(plausible_host("mastodon.social"));
-        assert!(plausible_host("social.example.co.uk"));
-        assert!(!plausible_host("https://mastodon.social"));
-        assert!(!plausible_host("mastodon.social/api/v1"));
-        assert!(!plausible_host("evil.example:8080"));
-        assert!(!plausible_host("localhost"));
-        assert!(!plausible_host(""));
+    fn a_host_with_a_path_scheme_ip_or_internal_suffix_is_refused() {
+        assert!(is_plausible_host("mastodon.social"));
+        assert!(is_plausible_host("social.example.co.uk"));
+        for rejected in [
+            "https://mastodon.social",
+            "mastodon.social/api/v1",
+            "evil.example:8080",
+            "localhost",
+            "api.localhost",
+            "127.0.0.1",
+            "169.254.169.254",
+            "10.0.0.1",
+            "192.168.1.1",
+            "calculator.nodus.svc",
+            "metadata.google.internal",
+            "printer.local",
+            "redis.default.svc.cluster.local",
+            "mastodon.social.",
+            "-evil.example",
+            "",
+        ] {
+            assert!(!is_plausible_host(rejected), "{rejected}");
+        }
     }
 
     #[test]
@@ -141,5 +142,12 @@ mod tests {
         assert!(!plausible_id("1/../etc"));
         assert!(!plausible_id("../1"));
         assert!(!plausible_id(""));
+    }
+
+    #[test]
+    fn host_validation_matches_shared_validator() {
+        assert!(!is_plausible_host("0x7f.0.0.1"));
+        assert!(!is_plausible_host("127.1"));
+        assert!(!is_plausible_host("foo.localdomain"));
     }
 }
