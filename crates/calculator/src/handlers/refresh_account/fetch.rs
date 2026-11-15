@@ -410,6 +410,9 @@ fn classify(error: InstanceError) -> JobError {
             Duration::from_secs(300),
             format!("unexpected response shape: {message}"),
         ),
+        InstanceError::Unsupported(feature) => {
+            JobError::permanent(format!("unsupported operation: {feature}"))
+        }
     }
 }
 

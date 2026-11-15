@@ -26,7 +26,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use nodus_client_core::model::{LocalId, PageParams};
+use nodus_client_core::model::{Account as InstanceAccount, LocalId, PageParams};
 use nodus_client_core::{Error as InstanceError, Instance, InstanceApi, SyncApi};
 use nodus_mastodon::HttpInstance;
 use nodus_store::models::{Job, NewAccount};
@@ -89,59 +89,68 @@ impl RefreshProfile {
     /// Reads the account, or `None` when it has been deleted since the job was queued.
     async fn target(&self, account_id: i64) -> Result<Option<Target>, sqlx::Error> {
         sqlx::query_as::<_, Target>(
-            "SELECT instance_host, mastodon_id, remote_id, acct, follows_private FROM account WHERE id = $1",
+            "SELECT instance_host::text AS instance_host, mastodon_id, remote_id, \
+             acct::text AS acct, follows_private FROM account WHERE id = $1",
         )
         .bind(account_id)
         .fetch_optional(&self.pool)
         .await
     }
 
-    /// One page of the subject's follow list, as local edge targets.
-    #[expect(
-        clippy::too_many_lines,
-        clippy::single_match_else,
-        reason = "the origin and pooled-token paths differ in three values and share the rest"
-    )]
-    async fn crawl(&self, target: &Target, account_id: i64) -> Result<Vec<i64>, JobError> {
-        let origin = target.acct.split_once('@').map(|(_, host)| host);
-        let (host, secret, me_id) = match origin {
-            Some(host) => (
-                host.to_owned(),
-                String::new(),
-                target
-                    .remote_id
-                    .clone()
-                    .unwrap_or_else(|| target.mastodon_id.to_string()),
-            ),
-            None => {
-                let Some(pooled) = users::pick_token(&self.pool, &target.instance_host, &[])
-                    .await
-                    .map_err(|error| database(&error))?
-                else {
-                    return Err(JobError::retry(
+    /// Resolves the account id to query on `origin`, persisting a newly looked-up `remote_id`.
+    async fn resolve_remote_id(
+        &self,
+        api: &HttpInstance,
+        account_id: i64,
+        user: &str,
+        cached: Option<&str>,
+    ) -> Result<String, JobError> {
+        if let Some(remote_id) = cached.map(str::trim).filter(|id| !id.is_empty()) {
+            return Ok(remote_id.to_owned());
+        }
+        let remote = api
+            .account_lookup(user)
+            .await
+            .map_err(classify_origin_lookup)?;
+        accounts::set_remote_id(&self.pool, account_id, &remote.id)
+            .await
+            .map_err(|error| database(&error))?;
+        Ok(remote.id)
+    }
+
+    /// Picks the host, HTTP client, and account id for crawling `target`.
+    async fn open_crawl_target(
+        &self,
+        target: &Target,
+        account_id: i64,
+    ) -> Result<(String, HttpInstance, LocalId, bool), JobError> {
+        let remote = remote_acct(&target.acct);
+        let (host, secret) = if let Some((_, origin)) = remote {
+            (origin.to_owned(), String::new())
+        } else {
+            let Some(pooled) = users::pick_token(&self.pool, &target.instance_host, &[])
+                .await
+                .map_err(|error| database(&error))?
+            else {
+                return Err(JobError::retry(
+                    BACKOFF,
+                    format!(
+                        "no token is available for `{}`; the profile crawl waits",
+                        target.instance_host
+                    ),
+                ));
+            };
+            let secret = self
+                .config
+                .sealer
+                .open(&pooled.access_token_enc)
+                .map_err(|error| {
+                    JobError::retry(
                         BACKOFF,
-                        format!(
-                            "no token is available for `{}`; the profile crawl waits",
-                            target.instance_host
-                        ),
-                    ));
-                };
-                let secret =
-                    self.config
-                        .sealer
-                        .open(&pooled.access_token_enc)
-                        .map_err(|error| {
-                            JobError::retry(
-                                BACKOFF,
-                                format!("a pooled token cannot be decrypted: {error}"),
-                            )
-                        })?;
-                (
-                    target.instance_host.clone(),
-                    secret,
-                    target.mastodon_id.to_string(),
-                )
-            }
+                        format!("a pooled token cannot be decrypted: {error}"),
+                    )
+                })?;
+            (target.instance_host.clone(), secret)
         };
 
         let authority = format!("{}://{host}", self.config.scheme);
@@ -149,7 +158,18 @@ impl RefreshProfile {
             JobError::permanent(format!("`{host}` is not a usable instance: {error}"))
         })?;
         let api = HttpInstance::new(&instance, secret);
-        let me = LocalId(me_id);
+        let me_id = if let Some((user, _)) = remote {
+            self.resolve_remote_id(&api, account_id, user, target.remote_id.as_deref())
+                .await?
+        } else {
+            target.mastodon_id.to_string()
+        };
+        Ok((host, api, LocalId(me_id), remote.is_some()))
+    }
+
+    /// One page of the subject's follow list, as local edge targets.
+    async fn crawl(&self, target: &Target, account_id: i64) -> Result<Vec<i64>, JobError> {
+        let (host, api, me, is_remote) = self.open_crawl_target(target, account_id).await?;
 
         let page = match api
             .following(&me, PageParams::first(self.config.page_size))
@@ -157,6 +177,11 @@ impl RefreshProfile {
         {
             Ok(page) => page,
             Err(InstanceError::Unauthorized) => {
+                if is_remote {
+                    return Err(JobError::permanent(
+                        "the origin instance requires authentication for follow lists",
+                    ));
+                }
                 return Err(JobError::retry(
                     BACKOFF,
                     "the instance rejected the pooled token; another will be used",
@@ -164,7 +189,7 @@ impl RefreshProfile {
             }
             Err(InstanceError::RateLimited { retry_after_s }) => {
                 return Err(JobError::retry(
-                    Duration::from_secs(u64::from(retry_after_s)),
+                    Duration::from_secs(u64::from(retry_after_s.max(1))),
                     "the instance asked us to slow down",
                 ));
             }
@@ -183,31 +208,12 @@ impl RefreshProfile {
         let batch: Vec<NewAccount> = page
             .items
             .iter()
-            .filter_map(|account| {
-                let mastodon_id = match account.id.parse::<i64>() {
-                    Ok(id) => id,
-                    Err(error) => {
-                        warn!(id = %account.id, "skipping a non-numeric account id: {error}");
-                        return None;
-                    }
-                };
-                Some(NewAccount {
-                    instance_host: host.clone(),
-                    mastodon_id,
-                    remote_id: None,
-                    acct: account.acct.clone(),
-                    display_name: (!account.display_name.is_empty())
-                        .then(|| account.display_name.clone()),
-                    followers_count: i32::try_from(account.followers_count).unwrap_or(i32::MAX),
-                    bot: account.bot,
-                    locked: account.locked,
-                    discoverable: account.discoverable,
-                    indexable: account.indexable,
-                    noindex: account.noindex,
-                })
-            })
+            .filter_map(|account| to_new_account(&host, account))
             .collect();
 
+        users::ensure_instance(&self.pool, &host)
+            .await
+            .map_err(|error| database(&error))?;
         accounts::upsert_many(&self.pool, &batch)
             .await
             .map_err(|error| database(&error))?;
@@ -216,23 +222,7 @@ impl RefreshProfile {
             let newcomers: Vec<NewAccount> = followers
                 .items
                 .iter()
-                .filter_map(|account| {
-                    let mastodon_id = account.id.parse::<i64>().ok()?;
-                    Some(NewAccount {
-                        instance_host: target.instance_host.clone(),
-                        mastodon_id,
-                        remote_id: None,
-                        acct: account.acct.clone(),
-                        display_name: (!account.display_name.is_empty())
-                            .then(|| account.display_name.clone()),
-                        followers_count: i32::try_from(account.followers_count).unwrap_or(i32::MAX),
-                        bot: account.bot,
-                        locked: account.locked,
-                        discoverable: account.discoverable,
-                        indexable: account.indexable,
-                        noindex: account.noindex,
-                    })
-                })
+                .filter_map(|account| to_new_account(&host, account))
                 .collect();
             accounts::upsert_many(&self.pool, &newcomers)
                 .await
@@ -240,7 +230,7 @@ impl RefreshProfile {
         }
 
         let mastodon_ids: Vec<i64> = batch.iter().map(|account| account.mastodon_id).collect();
-        let resolved = accounts::resolve_ids(&self.pool, &target.instance_host, &mastodon_ids)
+        let resolved = accounts::resolve_ids(&self.pool, &host, &mastodon_ids)
             .await
             .map_err(|error| database(&error))?;
 
@@ -436,6 +426,64 @@ impl Handler for RefreshProfile {
             Ok(())
         })
     }
+}
+
+/// The `user@host` an account actually lives on, when it is not local.
+fn remote_acct(acct: &str) -> Option<(&str, &str)> {
+    acct.split_once('@')
+        .filter(|(user, host)| !user.is_empty() && !host.is_empty())
+}
+
+/// Maps an unauthenticated `account_lookup` failure on a remote origin onto `JobError`.
+fn classify_origin_lookup(error: InstanceError) -> JobError {
+    match error {
+        InstanceError::RateLimited { retry_after_s } => JobError::retry(
+            Duration::from_secs(u64::from(retry_after_s.max(1))),
+            "the instance asked us to slow down",
+        ),
+        InstanceError::Unauthorized => {
+            JobError::permanent("401 from the instance: remote lookup rejected")
+        }
+        InstanceError::Status {
+            status: status @ (403 | 404),
+            message,
+        } => JobError::permanent(format!(
+            "{status} from the instance: remote account cannot be resolved: {message}"
+        )),
+        InstanceError::Unsupported(feature) => {
+            JobError::permanent(format!("unsupported operation: {feature}"))
+        }
+        InstanceError::Status { .. } | InstanceError::Transport(_) | InstanceError::Decode(_) => {
+            JobError::retry(
+                BACKOFF,
+                format!("the remote account could not be resolved: {error}"),
+            )
+        }
+    }
+}
+
+/// Maps a crawled instance account into a store upsert row under `host`.
+fn to_new_account(host: &str, account: &InstanceAccount) -> Option<NewAccount> {
+    let mastodon_id = match account.id.parse::<i64>() {
+        Ok(id) => id,
+        Err(error) => {
+            warn!(id = %account.id, "skipping a non-numeric account id: {error}");
+            return None;
+        }
+    };
+    Some(NewAccount {
+        instance_host: host.to_owned(),
+        mastodon_id,
+        remote_id: None,
+        acct: account.acct.clone(),
+        display_name: (!account.display_name.is_empty()).then(|| account.display_name.clone()),
+        followers_count: i32::try_from(account.followers_count).unwrap_or(i32::MAX),
+        bot: account.bot,
+        locked: account.locked,
+        discoverable: account.discoverable,
+        indexable: account.indexable,
+        noindex: account.noindex,
+    })
 }
 
 /// Cosine similarity between two sets of ids.
