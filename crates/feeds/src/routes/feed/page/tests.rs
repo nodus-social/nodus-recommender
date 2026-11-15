@@ -64,6 +64,14 @@ fn nothing_is_left_over_when_the_page_holds_everything() {
 }
 
 #[test]
+fn a_page_without_an_explore_pool_fills_its_limit() {
+    let plan = plan(25, 20, 7);
+    assert_eq!(plan.head, 20);
+    assert_eq!(plan.explore, Vec::<usize>::new());
+    assert!(plan.more);
+}
+
+#[test]
 fn the_indices_are_in_page_order() {
     let plan = plan(300, 40, 9);
     let indices = plan.indices();

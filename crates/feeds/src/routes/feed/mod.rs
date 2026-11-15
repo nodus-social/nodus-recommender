@@ -77,8 +77,9 @@ pub async fn accounts(
         let items = page.into_iter().map(snapshot_item).collect::<Vec<_>>();
         let next_cursor =
             more.then(|| cursor::encode(feed_id, items.last().map_or(after, |item| item.item_id)));
+        let model_version = feed::active_model_version(&state.pool).await?;
         return Ok(Json(envelope(
-            user.sync_enabled,
+            model_version,
             age,
             degraded,
             feed_id,
@@ -210,8 +211,9 @@ async fn reuse_live_snapshot(
     let items = page.into_iter().map(snapshot_item).collect::<Vec<_>>();
     let next_cursor =
         more.then(|| cursor::encode(feed_id, items.last().map_or(0, |item| item.item_id)));
+    let model_version = feed::active_model_version(&state.pool).await?;
     Ok(Some(Json(envelope(
-        user.sync_enabled,
+        model_version,
         age,
         degraded,
         feed_id,
