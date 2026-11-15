@@ -34,9 +34,9 @@ fn bucket(token: &str) -> (usize, f32) {
 }
 
 /// Splits HTML-ish text into lowercase words, skipping markup and URLs.
-fn tokens(text: &str) -> impl Iterator<Item = &str> {
+fn tokens(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split(|c: char| !c.is_alphanumeric() && c != '#' && c != '@')
-        .map(|token| token.trim_start_matches(['#', '@']))
+        .map(|token| token.trim_start_matches(['#', '@']).to_lowercase())
         .filter(|token| token.len() >= 3 && !is_noise(token))
 }
 
@@ -78,13 +78,13 @@ fn normalize(vector: &mut [f32]) {
 #[must_use]
 pub fn vector(text: &str) -> Vec<f32> {
     let mut vector = vec![0.0; DIMENSIONS];
-    let mut counts = std::collections::HashMap::<&str, u32>::new();
+    let mut counts = std::collections::HashMap::<String, u32>::new();
     for token in tokens(text) {
         *counts.entry(token).or_default() += 1;
     }
     for (token, count) in counts {
         let weight = 1.0 + (f32::from(u16::try_from(count).unwrap_or(u16::MAX))).ln();
-        let (index, sign) = bucket(token);
+        let (index, sign) = bucket(&token);
         vector[index] += sign * weight;
     }
     normalize(&mut vector);
@@ -239,5 +239,22 @@ mod tests {
         ]
         .map(str::to_owned);
         assert_eq!(profile(&texts).len(), 1);
+    }
+
+    #[test]
+    fn capitalized_stopwords_are_filtered_out() {
+        let noise_only = vector("The HTTP HTTPS With From Your");
+        assert!(
+            noise_only.iter().all(|&value| value == 0.0),
+            "capitalized noise words must be filtered out: {noise_only:?}"
+        );
+    }
+
+    #[test]
+    fn topic_hashing_is_case_insensitive() {
+        let lower = vector("rust compiler #traits");
+        let mixed = vector("Rust COMPILER #Traits");
+        assert_eq!(lower, mixed, "case differences must hash identically");
+        assert!((cosine(&lower, &mixed) - 1.0).abs() < 1e-6);
     }
 }

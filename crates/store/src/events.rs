@@ -171,6 +171,36 @@ pub async fn item_owned(pool: &PgPool, user_id: Uuid, item_id: i64) -> Result<bo
     .await
 }
 
+/// Resolve the distinct target account ids for items served to `user_id`.
+///
+/// Matches [`record`]'s ownership filter (`ri.user_id = $1`) so a client naming an
+/// item served to somebody else cannot trigger cache invalidation or sync jobs.
+///
+/// # Errors
+///
+/// Propagates [`sqlx::Error`].
+pub async fn owned_item_accounts(
+    pool: &PgPool,
+    user_id: Uuid,
+    item_ids: &[i64],
+) -> Result<Vec<i64>, sqlx::Error> {
+    if item_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_scalar::<_, i64>(
+        "SELECT DISTINCT COALESCE(ri.account_id, s.account_id) \
+         FROM recommendation_item ri \
+         LEFT JOIN status s ON s.id = ri.status_id \
+         WHERE ri.user_id = $1 \
+           AND ri.id = ANY($2::bigint[]) \
+           AND COALESCE(ri.account_id, s.account_id) IS NOT NULL",
+    )
+    .bind(user_id)
+    .bind(item_ids)
+    .fetch_all(pool)
+    .await
+}
+
 /// Invalidate what a follow makes wrong: the cached affinity, then the graph itself.
 ///
 /// The affinity row is deleted because it is a *prediction* that this account is worth

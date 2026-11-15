@@ -70,7 +70,10 @@ pub async fn recompute(pool: &PgPool) -> Result<FollowThroughReport, sqlx::Error
         SELECT
             ri.account_id,
             count(*) FILTER (WHERE e.kind = 'impression')::int,
-            count(*) FILTER (WHERE e.kind = 'follow')::int,
+            LEAST(
+                count(*) FILTER (WHERE e.kind = 'follow')::int,
+                count(*) FILTER (WHERE e.kind = 'impression')::int
+            ),
             count(DISTINCT e.user_id)::int,
             $2,
             now()
@@ -80,6 +83,7 @@ pub async fn recompute(pool: &PgPool) -> Result<FollowThroughReport, sqlx::Error
           AND e.kind IN ('impression', 'follow')
           AND e.server_ts > now() - ($1::int * interval '1 day')
         GROUP BY ri.account_id
+        HAVING count(*) FILTER (WHERE e.kind = 'impression') > 0
         ON CONFLICT (account_id) DO UPDATE SET
             impressions    = EXCLUDED.impressions,
             follows        = EXCLUDED.follows,
@@ -103,7 +107,7 @@ pub async fn recompute(pool: &PgPool) -> Result<FollowThroughReport, sqlx::Error
             JOIN recommendation_item ri ON ri.id = e.item_id
             WHERE ri.account_id = ft.account_id
               AND ri.kind = 'account'
-              AND e.kind IN ('impression', 'follow')
+              AND e.kind = 'impression'
               AND e.server_ts > now() - ($1::int * interval '1 day')
         )
         ",
@@ -127,16 +131,22 @@ pub async fn recompute(pool: &PgPool) -> Result<FollowThroughReport, sqlx::Error
 pub async fn expected_rate(pool: &PgPool) -> Result<Option<f64>, sqlx::Error> {
     sqlx::query_scalar::<_, Option<f64>>(
         r"
-        SELECT CASE
-                   WHEN count(*) = 0 THEN NULL
-                   ELSE count(*) FILTER (WHERE e.kind = 'follow')::float8
-                        / count(*)::float8
-               END
-        FROM interaction_event e
-        JOIN recommendation_item ri ON ri.id = e.item_id
-        WHERE ri.kind = 'account'
-          AND e.kind IN ('impression', 'follow')
-          AND e.server_ts > now() - ($1::int * interval '1 day')
+        SELECT sum(follows)::float8 / NULLIF(sum(impressions), 0)::float8
+        FROM (
+            SELECT
+                count(*) FILTER (WHERE e.kind = 'impression') AS impressions,
+                LEAST(
+                    count(*) FILTER (WHERE e.kind = 'follow'),
+                    count(*) FILTER (WHERE e.kind = 'impression')
+                ) AS follows
+            FROM interaction_event e
+            JOIN recommendation_item ri ON ri.id = e.item_id
+            WHERE ri.kind = 'account'
+              AND e.kind IN ('impression', 'follow')
+              AND e.server_ts > now() - ($1::int * interval '1 day')
+            GROUP BY ri.account_id
+            HAVING count(*) FILTER (WHERE e.kind = 'impression') > 0
+        ) per_account
         ",
     )
     .bind(WINDOW_DAYS)
