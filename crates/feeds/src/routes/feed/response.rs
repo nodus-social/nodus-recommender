@@ -66,7 +66,7 @@ fn hours_to_f32(hours: f64) -> f32 {
 
 /// Assembles the response envelope.
 pub(super) fn envelope(
-    _sync_enabled: bool,
+    model_version: i32,
     age_hours: Option<f64>,
     degraded: Option<String>,
     feed_id: Uuid,
@@ -79,7 +79,7 @@ pub(super) fn envelope(
             .format(&Rfc3339)
             .unwrap_or_default(),
         contract: CONTRACT_VERSION.to_owned(),
-        model_version: 0,
+        model_version,
         similarity_age_hours: age_hours.map_or(0.0, hours_to_f32),
         degraded,
         signals_unavailable: Vec::new(),

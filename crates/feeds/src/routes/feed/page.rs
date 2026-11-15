@@ -7,7 +7,6 @@
 //! without building fifty stored accounts.
 
 use nodus_core::explore;
-use nodus_store::feed::Candidate;
 
 /// The exploration window, restated here so the planner owns the invariant it
 /// enforces: explore slots start below [`nodus_core::explore::EXPLORE_FIRST_RANK`]
@@ -20,7 +19,7 @@ const LAST_RANK: usize = explore::EXPLORE_LAST_RANK;
 pub(super) struct Plan {
     /// Number of leading candidates to take: `candidates[..head]`.
     pub head: usize,
-    /// Indices into `candidates` for the explore slots, ascending.
+    /// Indices into `candidates` for the explore slots, in page order.
     pub explore: Vec<usize>,
     /// Whether the candidate list held anything beyond this page.
     pub more: bool,
@@ -54,6 +53,7 @@ pub(super) fn plan(available: usize, limit: usize, seed: u64) -> Plan {
         .min(LAST_RANK.saturating_sub(pool_start));
 
     if pool_len == 0 {
+        let head = limit.min(available);
         return Plan {
             head,
             explore: Vec::new(),
@@ -84,10 +84,10 @@ pub(super) fn plan(available: usize, limit: usize, seed: u64) -> Plan {
 ///
 /// Returns whether a slot was given up. The candidate must already sit below the head:
 /// promoting something the page shows anyway would spend a slot to change nothing.
-pub(super) fn promote_recovery(
+pub(super) fn promote_recovery<T>(
     plan: &mut Plan,
-    candidates: &[Candidate],
-    is_recovering: impl Fn(&Candidate) -> bool,
+    candidates: &[T],
+    is_recovering: impl Fn(&T) -> bool,
 ) -> bool {
     // The highest-ranked recovering candidate: the ranking still says it is the best
     // of the reconsiderable ones, and the point is to test that claim.
@@ -116,7 +116,7 @@ pub(super) fn promote_recovery(
 }
 
 /// The candidates a plan selects, in page order.
-pub(super) fn select<'a>(candidates: &'a [Candidate], plan: &Plan) -> Vec<&'a Candidate> {
+pub(super) fn select<'a, T>(candidates: &'a [T], plan: &Plan) -> Vec<&'a T> {
     plan.indices()
         .into_iter()
         .filter_map(|index| candidates.get(index))
