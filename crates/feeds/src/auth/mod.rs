@@ -5,7 +5,8 @@
 //! their identity by asking that instance. A token is opaque, so the request also
 //! has to say *which* instance to ask — hence the `X-Instance-Host` header.
 //!
-//! Verification is cached for ten minutes keyed by the token's fingerprint. That is
+//! Verification is cached for ten minutes keyed by the instance host and token's
+//! fingerprint. That is
 //! the compromise between authenticity (an instance call per request would triple
 //! our latency and spend the user's rate limit) and revocation (a revoked token is
 //! honoured for at most ten minutes, and any 401 from the instance clears the entry
@@ -22,7 +23,7 @@ use serde::Deserialize;
 
 use crate::error::ApiError;
 use crate::state::{AppState, Identity};
-use nodus_store::crypto::fingerprint;
+use nodus_store::crypto::verification_fingerprint;
 
 mod credentials;
 mod headers;
@@ -49,13 +50,22 @@ pub async fn authenticate(
     state: &AppState,
     credentials: Credentials,
 ) -> Result<Authenticated, ApiError> {
-    let key = fingerprint(credentials.token.expose());
-    let identity = if let Some(cached) = state.identities.get(&key).await {
-        cached
-    } else {
-        let verified = verify_at_instance(state, &credentials).await?;
-        state.identities.insert(key, verified.clone()).await;
-        verified
+    let normalized_host = credentials.instance_host.trim().to_ascii_lowercase();
+    let key = verification_fingerprint(&normalized_host, credentials.token.expose());
+    let identity = match state.identities.get(&key).await {
+        Some(cached) if cached.instance_host == normalized_host => cached,
+        other => {
+            if let Some(cached) = other {
+                tracing::warn!(
+                    cached_host = %cached.instance_host,
+                    requested_host = %normalized_host,
+                    "cached identity instance_host mismatch; re-verifying token"
+                );
+            }
+            let verified = verify_at_instance(state, &credentials).await?;
+            state.identities.insert(key, verified.clone()).await;
+            verified
+        }
     };
     nodus_store::users::ensure_instance(&state.pool, &credentials.instance_host).await?;
     let user = nodus_store::users::upsert(
@@ -119,6 +129,7 @@ async fn verify_at_instance(
                 ApiError::unavailable("instance_unreachable", 30)
             })?;
             Ok(Identity {
+                instance_host: credentials.instance_host.trim().to_ascii_lowercase(),
                 mastodon_account_id: mashdoton_account_id,
                 acct: body.acct,
             })

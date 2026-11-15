@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 /// without invalidating every cached entry (which is safe, merely wasteful).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
+    /// Normalized host name of the instance that verified this token.
+    pub instance_host: String,
     /// The account's numeric id at its own instance.
     pub mastodon_account_id: i64,
     /// `user@host` as the instance spells it.
