@@ -134,3 +134,92 @@ pub async fn soft_delete(pool: &PgPool, user_id: Uuid) -> Result<bool, sqlx::Err
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Soft-delete a user and purge all derived similarity, affinity, telemetry,
+/// authorization state, and pending jobs in one transaction.
+///
+/// # Errors
+///
+/// Propagates [`sqlx::Error`].
+pub async fn delete_account(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
+    purge_user_state(pool, user_id, true, true).await
+}
+
+/// Clear a user's stored sync token, purge derived similarity/affinity rows and
+/// pending user jobs, and optionally clear telemetry opt-in and events.
+///
+/// # Errors
+///
+/// Propagates [`sqlx::Error`].
+pub async fn revoke_sync(
+    pool: &PgPool,
+    user_id: Uuid,
+    clear_telemetry: bool,
+) -> Result<(), sqlx::Error> {
+    purge_user_state(pool, user_id, false, clear_telemetry).await
+}
+
+async fn purge_user_state(
+    pool: &PgPool,
+    user_id: Uuid,
+    soft_delete_user: bool,
+    clear_telemetry: bool,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    if soft_delete_user {
+        sqlx::query(
+            "UPDATE app_user SET deleted_at = COALESCE(deleted_at, now()), \
+                 access_token_enc = NULL, token_scopes = NULL, token_fingerprint = NULL, \
+                 sync_enabled = false, telemetry_opt_in = false, telemetry_opt_in_at = NULL \
+             WHERE id = $1",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    } else {
+        sqlx::query(
+            "UPDATE app_user SET access_token_enc = NULL, token_scopes = NULL, \
+                 token_fingerprint = NULL, sync_enabled = false, \
+                 telemetry_opt_in = CASE WHEN $2 THEN false ELSE telemetry_opt_in END, \
+                 telemetry_opt_in_at = CASE WHEN $2 THEN NULL ELSE telemetry_opt_in_at END \
+             WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(clear_telemetry)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    sqlx::query("DELETE FROM account_affinity WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM user_similarity WHERE user_id = $1 OR other_user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM reference_similarity WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    if soft_delete_user || clear_telemetry {
+        sqlx::query("DELETE FROM interaction_event WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("DELETE FROM sync_authorization WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE job SET status = 'cancelled', finished_at = now(), updated_at = now() \
+         WHERE subject_kind = 'user' AND subject_id = $1::text AND status = 'pending'",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}

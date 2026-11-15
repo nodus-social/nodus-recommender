@@ -5,13 +5,12 @@
 //! I/O; the values are consumed by [`super::SyncUser::new`] and by the token loop.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use nodus_cache::Budget;
 use nodus_store::crypto::TokenSealer;
 
-/// Burst for the in-process budget: one second's worth of requests can go at once,
-/// which is what lets a first page of 80 accounts arrive without stalling.
-pub(super) const BURST: u32 = 5;
+use crate::handlers::budget;
 
 /// How a crawl behaves: request spacing, page size and a hard page cap.
 ///
@@ -28,6 +27,8 @@ pub struct SyncConfig {
     pub max_pages: usize,
     /// The configured rate, from `SYNC_MAX_RPS_PER_HOST`.
     pub requests_per_second: f64,
+    /// Fraction of the per-host RPS cap this crawler may consume (`SYNC_BUDGET_FRACTION`).
+    pub budget_fraction: f64,
     /// The per-host request budget, once one is shared (Redis); `None` means the
     /// handler builds the in-process one on construction.
     ///
@@ -51,9 +52,17 @@ impl SyncConfig {
             page_size: 80,
             max_pages: 250,
             requests_per_second: rps,
+            budget_fraction: 1.0,
             budget: None,
             scheme: "https".to_owned(),
         }
+    }
+
+    /// Scales the per-host RPS cap by `budget_fraction` (`SYNC_BUDGET_FRACTION`).
+    #[must_use]
+    pub const fn with_budget_fraction(mut self, budget_fraction: f64) -> Self {
+        self.budget_fraction = budget_fraction;
+        self
     }
 
     /// Override the page size, for an instance whose cap is lower than the default.
@@ -85,6 +94,18 @@ impl SyncConfig {
         self
     }
 
+    /// Effective per-host RPS after applying `budget_fraction`.
+    #[must_use]
+    pub fn effective_rps(&self) -> f64 {
+        budget::effective_rps(self.requests_per_second, self.budget_fraction)
+    }
+
+    /// Minimum pause between sequential requests to the same host.
+    #[must_use]
+    pub fn request_interval(&self) -> Duration {
+        budget::request_interval(self.effective_rps())
+    }
+
     /// The configured rate as whole requests per second, for the budget backends.
     ///
     /// Both implementations take `u32`, while the configured rate is a fraction
@@ -92,9 +113,24 @@ impl SyncConfig {
     /// and the token's own spend pattern supplies the fractional pacing.
     /// Float-to-int casts saturate in Rust, so a huge rate lands at `u32::MAX`,
     /// `NaN` at 0, and the floor of one keeps the bucket usable.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     #[must_use]
     pub fn budget_rate(&self) -> u32 {
-        (self.requests_per_second.ceil() as u32).max(1)
+        budget::budget_rate(self.effective_rps())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY_B64: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+
+    #[test]
+    fn budget_fraction_scales_effective_rps_interval_and_budget_rate() {
+        let sealer = Arc::new(TokenSealer::from_base64(KEY_B64).expect("key"));
+        let config = SyncConfig::new(sealer, 10.0).with_budget_fraction(0.25);
+        assert!((config.effective_rps() - 2.5).abs() < 1e-9);
+        assert_eq!(config.budget_rate(), 3);
+        assert_eq!(config.request_interval(), Duration::from_millis(400));
     }
 }

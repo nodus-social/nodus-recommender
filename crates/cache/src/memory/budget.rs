@@ -50,8 +50,20 @@ impl InMemoryBudget {
     /// instance we have decided to stop crawling — not configuration errors.
     #[must_use]
     pub fn new(rate_per_second: u32, burst: u32) -> Self {
+        Self::with_rate(f64::from(rate_per_second), burst)
+    }
+
+    /// Create a budget allowing `burst` requests immediately and refilling at
+    /// a fractional `rate_per_second` per host.
+    #[must_use]
+    pub fn with_rate(rate_per_second: f64, burst: u32) -> Self {
+        let rate = if rate_per_second.is_finite() && rate_per_second > 0.0 {
+            rate_per_second
+        } else {
+            0.0
+        };
         Self {
-            rate_per_second: f64::from(rate_per_second),
+            rate_per_second: rate,
             burst: f64::from(burst),
             buckets: Mutex::new(HashMap::new()),
             holds: Mutex::new(HashMap::new()),

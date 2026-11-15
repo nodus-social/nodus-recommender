@@ -28,9 +28,9 @@ use sqlx::PgPool;
 pub struct RetentionPolicy {
     /// Days a `status` row is kept.
     ///
-    /// A status carries its deadline in `status.expires_at`, stamped on insert, so this
-    /// value documents and configures new rows rather than taking part in the delete
-    /// predicate: shortening it does not retroactively expire rows already written.
+    /// A status carries its deadline in `status.expires_at`, stamped on insert, and
+    /// `retain_batch` also evaluates `fetched_at < now() - post_days` so shortening
+    /// `POST_RETENTION_DAYS` takes effect on already-written rows too.
     pub post_days: u32,
     /// Days an `interaction_event` row is kept, measured on `server_ts`.
     ///
@@ -51,6 +51,12 @@ impl Default for RetentionPolicy {
 }
 
 impl RetentionPolicy {
+    /// The post cutoff as a Postgres interval literal, e.g. `"14 days"`.
+    fn post_interval(self) -> String {
+        let days = self.post_days;
+        format!("{days} days")
+    }
+
     /// The event cutoff as a Postgres interval literal, e.g. `"90 days"`.
     ///
     /// Built from a number and a fixed unit, so no user-supplied text ever reaches the
@@ -72,13 +78,15 @@ pub struct RetentionReport {
     pub recommendations: u64,
     /// Finished `job` rows deleted.
     pub jobs: u64,
-    /// Statements executed, across all four tables.
+    /// Soft-deleted `app_user` rows hard-deleted after 30 days.
+    pub users: u64,
+    /// Statements executed, across all tables.
     pub batches: u32,
 }
 
 /// Upper bound on statements for one table within a single call.
 ///
-/// One call must be bounded work. Four tables at 25 statements is at most 100 statements
+/// One call must be bounded work. Five tables at 25 statements is at most 125 statements
 /// per call, which keeps a tick's cost predictable even when the tables hold months of
 /// expired rows; splitting the budget per table means a telemetry backlog cannot starve
 /// the job cleanup, and the job cleanup cannot starve telemetry. Whatever is left is
@@ -92,21 +100,26 @@ const DELETE_EVENTS: &str = "DELETE FROM interaction_event WHERE ctid IN ( \
 
 /// One bounded pass over expired posts.
 const DELETE_STATUSES: &str = "DELETE FROM status WHERE ctid IN ( \
-     SELECT ctid FROM status WHERE expires_at < now() LIMIT $1)";
+     SELECT ctid FROM status \
+     WHERE expires_at < now() OR fetched_at < now() - $1::text::interval \
+     LIMIT $2)";
 
 /// One bounded pass over served items past their attribution window.
 const DELETE_RECOMMENDATIONS: &str = "DELETE FROM recommendation_item WHERE ctid IN ( \
      SELECT ctid FROM recommendation_item WHERE expires_at < now() LIMIT $1)";
 
 /// One bounded pass over finished jobs.
-///
-/// `cancelled` is in the predicate although `job_status_valid` does not allow it yet:
-/// the predicate is the intent, and it stays correct if the queue grows that terminal
-/// state.
 const DELETE_JOBS: &str = "DELETE FROM job WHERE ctid IN ( \
      SELECT ctid FROM job \
      WHERE status IN ('done', 'failed', 'cancelled') \
          AND finished_at < now() - interval '7 days' \
+     LIMIT $1)";
+
+/// One bounded pass over soft-deleted users past the 30-day grace period.
+const DELETE_USERS: &str = "DELETE FROM app_user WHERE ctid IN ( \
+     SELECT ctid FROM app_user \
+     WHERE deleted_at IS NOT NULL \
+         AND deleted_at < now() - interval '30 days' \
      LIMIT $1)";
 
 /// Whether a pass that just deleted `deleted` rows should be followed by another.
@@ -139,6 +152,7 @@ pub async fn retain_batch(
     batch: i64,
 ) -> Result<RetentionReport, sqlx::Error> {
     let mut statements = 0_u32;
+    let post_interval = policy.post_interval();
     let event_interval = policy.event_interval();
 
     let interactions = drain(
@@ -150,14 +164,23 @@ pub async fn retain_batch(
     )
     .await?;
     let recommendations = drain(pool, DELETE_RECOMMENDATIONS, None, batch, &mut statements).await?;
-    let statuses = drain(pool, DELETE_STATUSES, None, batch, &mut statements).await?;
+    let statuses = drain(
+        pool,
+        DELETE_STATUSES,
+        Some(post_interval.as_str()),
+        batch,
+        &mut statements,
+    )
+    .await?;
     let jobs = drain(pool, DELETE_JOBS, None, batch, &mut statements).await?;
+    let users = drain(pool, DELETE_USERS, None, batch, &mut statements).await?;
 
     Ok(RetentionReport {
         statuses,
         interactions,
         recommendations,
         jobs,
+        users,
         batches: statements,
     })
 }

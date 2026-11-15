@@ -11,10 +11,15 @@
 //! [`upsert_many`] filters the same set in Rust so a caller bug produces no rows
 //! instead of a constraint violation that poisons the whole page.
 
+use std::collections::HashSet;
+
 use nodus_shared::{PostEmoji, PostMedia};
 use serde_json::Value;
 use sqlx::PgPool;
 use time::OffsetDateTime;
+
+/// Default retention window for statuses when the caller does not override it.
+pub const DEFAULT_POST_RETENTION_DAYS: u32 = 14;
 
 /// One status page entry, normalised for [`upsert_many`].
 ///
@@ -73,10 +78,38 @@ pub struct NewStatus {
 /// Propagates [`sqlx::Error`]. The caller must have ensured the `instance` and
 /// `account` rows exist.
 pub async fn upsert_many(pool: &PgPool, statuses: &[NewStatus]) -> Result<u64, sqlx::Error> {
-    let retained: Vec<&NewStatus> = statuses
-        .iter()
-        .filter(|status| matches!(status.visibility.as_str(), "public" | "unlisted"))
-        .collect();
+    upsert_many_for_days(pool, statuses, DEFAULT_POST_RETENTION_DAYS).await
+}
+
+/// Insert or refresh a batch of statuses with an explicit retention window in days.
+///
+/// Duplicate `(instance_host, remote_id)` entries within a single batch are
+/// collapsed (keeping the latest occurrence) so Postgres's `ON CONFLICT DO UPDATE`
+/// never fails on repeated items within one page.
+///
+/// # Errors
+///
+/// Propagates [`sqlx::Error`]. The caller must have ensured the `instance` and
+/// `account` rows exist.
+pub async fn upsert_many_for_days(
+    pool: &PgPool,
+    statuses: &[NewStatus],
+    retention_days: u32,
+) -> Result<u64, sqlx::Error> {
+    let mut seen = HashSet::new();
+    let mut retained: Vec<&NewStatus> = Vec::with_capacity(statuses.len());
+    for status in statuses.iter().rev() {
+        if !matches!(status.visibility.as_str(), "public" | "unlisted") {
+            continue;
+        }
+        if seen.insert((
+            status.instance_host.to_ascii_lowercase(),
+            status.remote_id.as_str(),
+        )) {
+            retained.push(status);
+        }
+    }
+    retained.reverse();
     if retained.is_empty() {
         return Ok(0);
     }
@@ -103,14 +136,15 @@ pub async fn upsert_many(pool: &PgPool, statuses: &[NewStatus]) -> Result<u64, s
         .iter()
         .map(|s| serde_json::to_value(&s.emojis).unwrap_or_else(|_| Value::Array(Vec::new())))
         .collect();
+    let retention_interval = format!("{retention_days} days");
 
     let result = sqlx::query(
         "INSERT INTO status (instance_host, mastodon_id, remote_id, account_id, content, visibility, \
              favourites_count, reblogs_count, replies_count, language, created_at, url, \
-             media, sensitive, spoiler_text, emojis) \
+             media, sensitive, spoiler_text, emojis, expires_at) \
          SELECT host, mastodon_id, remote_id, account_id, content, visibility, favourites_count, \
                 reblogs_count, replies_count, language, created_at, url, media, sensitive, \
-                spoiler_text, emojis \
+                spoiler_text, emojis, now() + $17::text::interval \
            FROM UNNEST($1::text[], $2::bigint[], $3::text[], $4::bigint[], $5::text[], $6::text[], \
                        $7::int[], $8::int[], $9::int[], $10::text[], $11::timestamptz[], \
                        $12::text[], $13::jsonb[], $14::bool[], $15::text[], $16::jsonb[]) \
@@ -129,7 +163,7 @@ pub async fn upsert_many(pool: &PgPool, statuses: &[NewStatus]) -> Result<u64, s
              reblogs_count = EXCLUDED.reblogs_count, \
              replies_count = EXCLUDED.replies_count, \
              fetched_at = now(), \
-             expires_at = now() + interval '14 days'",
+             expires_at = EXCLUDED.expires_at",
     )
     .bind(&hosts)
     .bind(&ids)
@@ -147,6 +181,7 @@ pub async fn upsert_many(pool: &PgPool, statuses: &[NewStatus]) -> Result<u64, s
     .bind(&sensitives)
     .bind(&spoilers)
     .bind(&emojis)
+    .bind(&retention_interval)
     .execute(pool)
     .await?;
     Ok(result.rows_affected())
@@ -157,12 +192,31 @@ pub async fn upsert_many(pool: &PgPool, statuses: &[NewStatus]) -> Result<u64, s
 /// An origin-first fetch sees the canonical post; the local instance may already
 /// have cached the same post under its own id. Matching on `(account_id, url)`
 /// updates that row in place instead of creating a second copy of one post.
+///
+/// # Errors
+///
+/// Propagates [`sqlx::Error`].
 pub async fn update_by_url(pool: &PgPool, status: &NewStatus) -> Result<bool, sqlx::Error> {
+    update_by_url_for_days(pool, status, DEFAULT_POST_RETENTION_DAYS).await
+}
+
+/// Refresh a status already stored under another instance's copy with an explicit
+/// retention window in days.
+///
+/// # Errors
+///
+/// Propagates [`sqlx::Error`].
+pub async fn update_by_url_for_days(
+    pool: &PgPool,
+    status: &NewStatus,
+    retention_days: u32,
+) -> Result<bool, sqlx::Error> {
     let Some(url) = status.url.as_deref().filter(|url| !url.is_empty()) else {
         return Ok(false);
     };
     let media = serde_json::to_value(&status.media).unwrap_or_else(|_| Value::Array(Vec::new()));
     let emojis = serde_json::to_value(&status.emojis).unwrap_or_else(|_| Value::Array(Vec::new()));
+    let retention_interval = format!("{retention_days} days");
     let result = sqlx::query(
         "UPDATE status SET \
              content = $3, \
@@ -177,7 +231,7 @@ pub async fn update_by_url(pool: &PgPool, status: &NewStatus) -> Result<bool, sq
              spoiler_text = $12, \
              emojis = $13, \
              fetched_at = now(), \
-             expires_at = now() + interval '14 days' \
+             expires_at = now() + $14::text::interval \
          WHERE account_id = $1 AND url = $2 AND url <> '' \
            AND visibility IN ('public', 'unlisted')",
     )
@@ -194,6 +248,7 @@ pub async fn update_by_url(pool: &PgPool, status: &NewStatus) -> Result<bool, sq
     .bind(status.sensitive)
     .bind(&status.spoiler_text)
     .bind(emojis)
+    .bind(&retention_interval)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() > 0)

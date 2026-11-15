@@ -28,23 +28,18 @@ use core::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nodus_cache::Budget;
 use nodus_store::crypto::TokenSealer;
 use nodus_store::models::Job;
+use nodus_store::statuses::DEFAULT_POST_RETENTION_DAYS;
 use sqlx::PgPool;
 
-use super::{Handler, JobError};
+use super::{Handler, JobError, budget};
 
 pub(crate) mod fetch;
 
 #[cfg(test)]
 mod tests;
-
-/// The longest pause the config builds between two pages.
-///
-/// `SYNC_MAX_RPS_PER_HOST` is a float, and `1 / rps` overflows [`Duration`] for an
-/// absurdly small value; a day is far beyond any useful crawl pace and keeps the
-/// constructor panic-free.
-const MAX_REQUEST_INTERVAL: Duration = Duration::from_secs(86_400);
 
 /// How a status refresh behaves: page size, page cap and request spacing.
 ///
@@ -59,8 +54,16 @@ pub struct RefreshConfig {
     pub page_size: u16,
     /// Hard cap on pages per run.
     pub max_pages: usize,
-    /// Pause between two pages, derived from `SYNC_MAX_RPS_PER_HOST`.
+    /// Unscaled per-host request cap from `SYNC_MAX_RPS_PER_HOST`.
+    pub requests_per_second: f64,
+    /// Fraction of the per-host RPS cap this crawler may consume (`SYNC_BUDGET_FRACTION`).
+    pub budget_fraction: f64,
+    /// Pause between two pages, derived from `SYNC_MAX_RPS_PER_HOST` and `SYNC_BUDGET_FRACTION`.
     pub request_interval: Duration,
+    /// Shared per-host request budget (`REDIS_URL`), or `None` for per-process fallback.
+    pub budget: Option<Arc<dyn Budget>>,
+    /// Retention window in days applied to newly fetched/updated statuses (`POST_RETENTION_DAYS`).
+    pub post_retention_days: u32,
     /// Scheme used to reach an instance: `https`, except for a development
     /// instance that serves plain HTTP on localhost.
     pub scheme: String,
@@ -71,14 +74,54 @@ impl RefreshConfig {
     #[must_use]
     pub fn new(sealer: Arc<TokenSealer>, max_rps: f64) -> Self {
         let rps = if max_rps > 0.0 { max_rps } else { 1.0 };
-        let interval = (1.0 / rps).min(MAX_REQUEST_INTERVAL.as_secs_f64());
+        let budget_fraction = 1.0;
+        let effective = budget::effective_rps(rps, budget_fraction);
         Self {
             sealer,
             page_size: 20,
             max_pages: 3,
-            request_interval: Duration::from_secs_f64(interval),
+            requests_per_second: rps,
+            budget_fraction,
+            request_interval: budget::request_interval(effective),
+            budget: None,
+            post_retention_days: DEFAULT_POST_RETENTION_DAYS,
             scheme: "https".to_owned(),
         }
+    }
+
+    /// Scales the per-host RPS cap by `budget_fraction` (`SYNC_BUDGET_FRACTION`)
+    /// and updates `request_interval` to match.
+    #[must_use]
+    pub fn with_budget_fraction(mut self, budget_fraction: f64) -> Self {
+        self.budget_fraction = budget_fraction;
+        self.request_interval = budget::request_interval(self.effective_rps());
+        self
+    }
+
+    /// Uses `budget` as the shared per-host request budget.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Arc<dyn Budget>) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// Sets how many days fetched statuses remain active (`POST_RETENTION_DAYS`).
+    #[must_use]
+    pub const fn with_post_retention_days(mut self, days: u32) -> Self {
+        self.post_retention_days = days;
+        self
+    }
+
+    /// Effective per-host RPS after applying `budget_fraction`.
+    #[must_use]
+    pub fn effective_rps(&self) -> f64 {
+        budget::effective_rps(self.requests_per_second, self.budget_fraction)
+    }
+
+    /// Whole requests per second for configuring shared budget backends.
+    #[must_use]
+    pub fn budget_rate(&self) -> u32 {
+        budget::budget_rate(self.effective_rps())
     }
 
     /// Override the page size, for an instance whose cap is lower than the default.
@@ -105,13 +148,19 @@ impl RefreshConfig {
 pub struct RefreshAccount {
     pool: PgPool,
     config: RefreshConfig,
+    budget: Arc<dyn Budget>,
 }
 
 impl RefreshAccount {
     /// A handler bound to one pool and one pacing config.
     #[must_use]
     pub fn new(pool: PgPool, config: RefreshConfig) -> Self {
-        Self { pool, config }
+        let budget = budget::resolve_budget(config.budget.clone(), config.effective_rps());
+        Self {
+            pool,
+            config,
+            budget,
+        }
     }
 }
 
@@ -139,7 +188,7 @@ impl Handler for RefreshAccount {
             let account_id = raw.parse::<i64>().map_err(|error| {
                 JobError::permanent(format!("subject_id `{raw}` is not an account id: {error}"))
             })?;
-            fetch::run(&self.pool, &self.config, account_id).await?;
+            fetch::run(&self.pool, &self.config, &*self.budget, account_id).await?;
             Ok(())
         })
     }

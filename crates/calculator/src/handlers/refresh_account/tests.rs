@@ -103,3 +103,23 @@ fn an_unparseable_numeric_field_falls_back_instead_of_panicking() {
     assert_eq!(mapped.remote_id, "not-a-number");
     assert_ne!(mapped.mastodon_id, 0);
 }
+
+#[test]
+fn refresh_config_applies_budget_fraction_and_post_retention_days() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use nodus_store::crypto::TokenSealer;
+
+    let sealer = Arc::new(
+        TokenSealer::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=").expect("key"),
+    );
+    let config = super::RefreshConfig::new(sealer, 4.0)
+        .with_budget_fraction(0.5)
+        .with_post_retention_days(45);
+
+    assert!((config.effective_rps() - 2.0).abs() < 1e-9);
+    assert_eq!(config.budget_rate(), 2);
+    assert_eq!(config.request_interval, Duration::from_millis(500));
+    assert_eq!(config.post_retention_days, 45);
+}

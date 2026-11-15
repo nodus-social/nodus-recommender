@@ -79,6 +79,16 @@ impl Config {
     /// cannot be parsed. Callers should exit non-zero: a partially configured service
     /// is worse than a stopped one.
     pub fn from_env() -> Result<Self, ConfigError> {
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    fn from_lookup<F>(lookup: F) -> Result<Self, ConfigError>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let optional = |name: &str| lookup(name).filter(|v| !v.trim().is_empty());
+        let required = |name: &'static str| optional(name).ok_or(ConfigError::Missing(name));
+
         let database_url = required("DATABASE_URL")?;
         let listen_addr = parse_socket_addr(
             optional("LISTEN_ADDR")
@@ -96,21 +106,17 @@ impl Config {
             .unwrap_or_default();
         let public_base_url =
             optional("PUBLIC_BASE_URL").unwrap_or_else(|| format!("http://{listen_addr}"));
-        let sync_enabled = parse_bool("SYNC_ENABLED", false)?;
-        let max_connections = optional("DB_MAX_CONNECTIONS")
-            .map(|raw| {
-                raw.parse::<u32>().map_err(|e| ConfigError::Invalid {
-                    name: "DB_MAX_CONNECTIONS",
-                    reason: e.to_string(),
-                })
-            })
-            .transpose()?
-            .unwrap_or(10);
-        let replicas = parse("FEEDS_REPLICAS", 1_u32)?;
+        let sync_enabled = parse_bool(&optional, "SYNC_ENABLED", false)?;
+        let max_connections = parse_first(
+            &optional,
+            &["FEEDS_DB_MAX_CONNECTIONS", "DB_MAX_CONNECTIONS"],
+            10_u32,
+        )?;
+        let replicas = parse(&optional, "FEEDS_REPLICAS", 1_u32)?;
         let redis_url = optional("REDIS_URL");
-        let verify_cache_seconds = parse("VERIFY_CACHE_SECONDS", 600_u64)?;
-        let verify_cache_capacity = parse("VERIFY_CACHE_CAPACITY", 10_000_usize)?;
-        let og_cache_seconds = parse("OG_CACHE_SECONDS", 86_400_u64)?;
+        let verify_cache_seconds = parse(&optional, "VERIFY_CACHE_SECONDS", 600_u64)?;
+        let verify_cache_capacity = parse(&optional, "VERIFY_CACHE_CAPACITY", 10_000_usize)?;
+        let og_cache_seconds = parse(&optional, "OG_CACHE_SECONDS", 86_400_u64)?;
         let token_enc_key = match optional("TOKEN_ENC_KEY") {
             Some(raw) => {
                 Some(
@@ -163,7 +169,30 @@ impl Config {
     }
 }
 
-fn parse<T: std::str::FromStr>(name: &'static str, default: T) -> Result<T, ConfigError> {
+fn parse_first<T: std::str::FromStr>(
+    optional: &dyn Fn(&str) -> Option<String>,
+    names: &[&'static str],
+    default: T,
+) -> Result<T, ConfigError>
+where
+    T::Err: std::fmt::Display,
+{
+    for &name in names {
+        if let Some(raw) = optional(name) {
+            return raw.parse::<T>().map_err(|e| ConfigError::Invalid {
+                name,
+                reason: e.to_string(),
+            });
+        }
+    }
+    Ok(default)
+}
+
+fn parse<T: std::str::FromStr>(
+    optional: &dyn Fn(&str) -> Option<String>,
+    name: &'static str,
+    default: T,
+) -> Result<T, ConfigError> {
     match optional(name) {
         None => Ok(default),
         Some(raw) => raw.parse().map_err(|_| ConfigError::Invalid {
@@ -171,14 +200,6 @@ fn parse<T: std::str::FromStr>(name: &'static str, default: T) -> Result<T, Conf
             reason: format!("{raw} is not a valid value"),
         }),
     }
-}
-
-fn optional(name: &'static str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
-}
-
-fn required(name: &'static str) -> Result<String, ConfigError> {
-    optional(name).ok_or(ConfigError::Missing(name))
 }
 
 fn parse_socket_addr(raw: &str) -> Result<SocketAddr, ConfigError> {
@@ -191,7 +212,11 @@ fn parse_socket_addr(raw: &str) -> Result<SocketAddr, ConfigError> {
         })
 }
 
-fn parse_bool(name: &'static str, default: bool) -> Result<bool, ConfigError> {
+fn parse_bool(
+    optional: &dyn Fn(&str) -> Option<String>,
+    name: &'static str,
+    default: bool,
+) -> Result<bool, ConfigError> {
     match optional(name) {
         None => Ok(default),
         Some(raw) => match raw.to_ascii_lowercase().as_str() {
@@ -202,5 +227,63 @@ fn parse_bool(name: &'static str, default: bool) -> Result<bool, ConfigError> {
                 reason: format!("{other} is not a boolean"),
             }),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn from_pairs(pairs: &[(&str, &str)]) -> Result<Config, ConfigError> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        Config::from_lookup(|name| map.get(name).cloned())
+    }
+
+    #[test]
+    fn feeds_db_max_connections_overrides_db_max_connections() {
+        let config = from_pairs(&[
+            ("DATABASE_URL", "postgres://unused"),
+            ("DB_MAX_CONNECTIONS", "7"),
+            ("FEEDS_DB_MAX_CONNECTIONS", "24"),
+        ])
+        .expect("valid config");
+        assert_eq!(config.max_connections, 24);
+
+        let fallback = from_pairs(&[
+            ("DATABASE_URL", "postgres://unused"),
+            ("DB_MAX_CONNECTIONS", "7"),
+        ])
+        .expect("fallback config");
+        assert_eq!(fallback.max_connections, 7);
+
+        let invalid = from_pairs(&[
+            ("DATABASE_URL", "postgres://unused"),
+            ("FEEDS_DB_MAX_CONNECTIONS", "nope"),
+            ("DB_MAX_CONNECTIONS", "7"),
+        ]);
+        assert!(matches!(
+            invalid,
+            Err(ConfigError::Invalid {
+                name: "FEEDS_DB_MAX_CONNECTIONS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn multiple_replicas_require_redis_url() {
+        let config = from_pairs(&[
+            ("DATABASE_URL", "postgres://unused"),
+            ("FEEDS_REPLICAS", "2"),
+        ])
+        .expect("config parses");
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::Inconsistent(msg)) if msg.contains("REDIS_URL")
+        ));
     }
 }

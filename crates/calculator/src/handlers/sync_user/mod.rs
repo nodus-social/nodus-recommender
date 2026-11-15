@@ -37,7 +37,7 @@ use core::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nodus_cache::{Budget, InMemoryBudget};
+use nodus_cache::Budget;
 use nodus_store::accounts as store_accounts;
 use nodus_store::models::Job;
 use nodus_store::{jobs, users};
@@ -54,7 +54,6 @@ mod follows;
 pub use config::SyncConfig;
 
 use accounts::Subject;
-use config::BURST;
 use follows::{AttemptError, Retired, exhausted};
 
 /// The P0 handler.
@@ -71,15 +70,8 @@ impl SyncUser {
     /// A handler bound to one pool and one pacing config.
     #[must_use]
     pub fn new(pool: PgPool, config: SyncConfig) -> Self {
-        let budget = if let Some(budget) = config.budget.clone() {
-            budget
-        } else {
-            warn!(
-                "no shared request budget configured; per-host budgets are per replica \
-                 (set REDIS_URL to share them)"
-            );
-            Arc::new(InMemoryBudget::new(config.budget_rate(), BURST))
-        };
+        let budget =
+            crate::handlers::budget::resolve_budget(config.budget.clone(), config.effective_rps());
         Self {
             pool,
             config,
@@ -183,13 +175,8 @@ impl SyncUser {
                 Err(AttemptError::Retired(Retired::RateLimited(delay))) => {
                     // The instance's own answer becomes state every replica reads;
                     // otherwise the next job walks into the same 429.
-                    if let Err(error) = self.budget.hold(&subject.instance_host, delay).await {
-                        warn!(
-                            %error,
-                            host = %subject.instance_host,
-                            "could not record the host cooldown"
-                        );
-                    }
+                    crate::handlers::budget::hold(&*self.budget, &subject.instance_host, delay)
+                        .await;
                     rate_limited = Some(rate_limited.map_or(delay, |current| current.min(delay)));
                     excluded.push(token.fingerprint);
                 }

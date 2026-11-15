@@ -150,32 +150,9 @@ impl SyncUser {
     /// requests per user per day and the page cap bounds the rest.
     pub(super) async fn charge(&self, token: &Token, host: &str) -> Result<(), AttemptError> {
         let bucket = token.bucket();
-        match self.budget.acquire(host, &bucket).await {
-            Ok(true) => Ok(()),
-            Ok(false) => {
-                let delay = self
-                    .budget
-                    .retry_hint(host, &bucket)
-                    .max(Duration::from_millis(100));
-                Err(AttemptError::Fatal(JobError::retry(
-                    delay,
-                    format!("request budget for {host} is spent; rescheduling"),
-                )))
-            }
-            Err(error) => {
-                // A cache outage must not become a crawl outage: refusing is the
-                // safe answer, and the hint keeps the retry from spinning.
-                let delay = self
-                    .budget
-                    .retry_hint(host, &bucket)
-                    .max(Duration::from_secs(1));
-                warn!(%error, host, "request budget unavailable");
-                Err(AttemptError::Fatal(JobError::retry(
-                    delay,
-                    format!("request budget unavailable: {error}"),
-                )))
-            }
-        }
+        crate::handlers::budget::acquire(&*self.budget, host, &bucket)
+            .await
+            .map_err(AttemptError::Fatal)
     }
 }
 

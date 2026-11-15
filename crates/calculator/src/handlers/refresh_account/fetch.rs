@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use nodus_cache::Budget;
 use nodus_client_core::model::{
     LocalId, MediaAttachment, MediaKind, PageParams, Status, Visibility,
 };
@@ -23,6 +24,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tracing::{info, warn};
 
+use super::budget;
 use super::{JobError, RefreshConfig};
 
 /// How long to wait before retrying when the host has no usable token.
@@ -45,6 +47,7 @@ const NO_TOKEN_RETRY: Duration = Duration::from_secs(300);
 pub(super) async fn run(
     pool: &PgPool,
     config: &RefreshConfig,
+    budget: &dyn Budget,
     account_id: i64,
 ) -> Result<u64, JobError> {
     let Some(account) = accounts::get(pool, account_id)
@@ -57,7 +60,7 @@ pub(super) async fn run(
     };
 
     if let Some((user, origin)) = remote_acct(&account.acct) {
-        match refresh_remote(pool, config, &account, user, origin).await {
+        match refresh_remote(pool, config, budget, &account, user, origin).await {
             Ok(written) => {
                 statuses::mark_account_fetched(pool, account_id)
                     .await
@@ -80,11 +83,21 @@ pub(super) async fn run(
     }
 
     let sealed = pick_token(pool, &account.instance_host).await?;
-    let api = transport(&account.instance_host, &sealed, config)?;
+    let (api, bucket) = transport_with_bucket(&account.instance_host, &sealed, config)?;
     let author = LocalId(account.mastodon_id.to_string());
-    let (batch, avatar) = walk(&api, &author, &account.instance_host, account.id, config).await?;
+    let (batch, avatar) = walk(
+        &api,
+        &author,
+        &account.instance_host,
+        &bucket,
+        account.id,
+        config,
+        budget,
+        false,
+    )
+    .await?;
 
-    let written = statuses::upsert_many(pool, &batch)
+    let written = statuses::upsert_many_for_days(pool, &batch, config.post_retention_days)
         .await
         .map_err(|error| database(&error))?;
     if let Some(avatar) = avatar {
@@ -119,6 +132,7 @@ fn remote_acct(acct: &str) -> Option<(&str, &str)> {
 async fn refresh_remote(
     pool: &PgPool,
     config: &RefreshConfig,
+    budget: &dyn Budget,
     account: &Account,
     user: &str,
     origin: &str,
@@ -127,20 +141,52 @@ async fn refresh_remote(
         .await
         .map_err(|error| database(&error))?;
     let api = public_transport(origin, config)?;
+    budget::acquire(budget, origin, budget::PUBLIC_BUCKET).await?;
     let (remote, batch, avatar) = match api.account_lookup(user).await {
         Ok(remote) => {
             let author = LocalId(remote.id.clone());
-            let (batch, avatar) = walk(&api, &author, origin, account.id, config).await?;
+            let (batch, avatar) = walk(
+                &api,
+                &author,
+                origin,
+                budget::PUBLIC_BUCKET,
+                account.id,
+                config,
+                budget,
+                true,
+            )
+            .await?;
             (remote, batch, avatar)
         }
         Err(InstanceError::Status { status: 404, .. }) => {
+            tokio::time::sleep(config.request_interval).await;
+            budget::acquire(budget, origin, budget::PUBLIC_BUCKET).await?;
             let api = misskey_transport(origin, config)?;
-            let remote = api.account_lookup(user).await.map_err(classify)?;
+            let remote = match api.account_lookup(user).await {
+                Ok(remote) => remote,
+                Err(error) => {
+                    budget::hold_if_rate_limited(budget, origin, &error).await;
+                    return Err(classify(error));
+                }
+            };
             let author = LocalId(remote.id.clone());
-            let (batch, avatar) = walk(&api, &author, origin, account.id, config).await?;
+            let (batch, avatar) = walk(
+                &api,
+                &author,
+                origin,
+                budget::PUBLIC_BUCKET,
+                account.id,
+                config,
+                budget,
+                true,
+            )
+            .await?;
             (remote, batch, avatar)
         }
-        Err(error) => return Err(classify(error)),
+        Err(error) => {
+            budget::hold_if_rate_limited(budget, origin, &error).await;
+            return Err(classify(error));
+        }
     };
     accounts::set_remote_id(pool, account.id, &remote.id)
         .await
@@ -148,14 +194,14 @@ async fn refresh_remote(
 
     let mut fresh = Vec::with_capacity(batch.len());
     for row in &batch {
-        if !statuses::update_by_url(pool, row)
+        if !statuses::update_by_url_for_days(pool, row, config.post_retention_days)
             .await
             .map_err(|error| database(&error))?
         {
             fresh.push(row.clone());
         }
     }
-    statuses::upsert_many(pool, &fresh)
+    statuses::upsert_many_for_days(pool, &fresh, config.post_retention_days)
         .await
         .map_err(|error| database(&error))?;
     if let Some(avatar) = avatar {
@@ -211,11 +257,11 @@ pub(crate) fn misskey_transport(
     ))
 }
 
-pub(crate) fn transport(
+pub(crate) fn transport_with_bucket(
     host: &str,
     sealed: &[u8],
     config: &RefreshConfig,
-) -> Result<HttpInstance, JobError> {
+) -> Result<(HttpInstance, String), JobError> {
     let secret = config.sealer.open(sealed).map_err(|error| {
         // One corrupt row must not make the account permanently unrefreshable;
         // the pool rotates, and the next attempt may pick a healthy token.
@@ -224,23 +270,28 @@ pub(crate) fn transport(
             format!("a pooled token for {host} cannot be decrypted: {error}"),
         )
     })?;
+    let bucket = budget::secret_bucket(&secret);
     let authority = format!("{}://{host}", config.scheme);
     let instance = Instance::parse(&authority).map_err(|error| {
         JobError::permanent(format!("`{host}` is not a usable instance: {error}"))
     })?;
-    Ok(HttpInstance::new(&instance, secret))
+    Ok((HttpInstance::new(&instance, secret), bucket))
 }
 
-/// Walks at most `max_pages` pages, sleeping between requests.
-///
-/// The sleep is between pages rather than before the first one: a fresh job that
-/// has not spent a request should not wait for a budget it has not touched.
+/// Walks at most `max_pages` pages, enforcing the shared budget and sleeping between requests.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shares the host, bucket, budget, and pacing across authenticated and remote walks"
+)]
 async fn walk<I>(
     api: &I,
     author: &LocalId,
     instance_host: &str,
+    bucket: &str,
     account_id: i64,
     config: &RefreshConfig,
+    budget: &dyn Budget,
+    pause_before_first: bool,
 ) -> Result<(Vec<NewStatus>, Option<String>), JobError>
 where
     I: InstanceApi<Error = InstanceError>,
@@ -250,13 +301,17 @@ where
     let mut avatar = None;
 
     for page in 0..config.max_pages {
-        if page > 0 {
+        if page > 0 || pause_before_first {
             tokio::time::sleep(config.request_interval).await;
         }
-        let result = api
-            .account_statuses(author, params)
-            .await
-            .map_err(classify)?;
+        budget::acquire(budget, instance_host, bucket).await?;
+        let result = match api.account_statuses(author, params).await {
+            Ok(result) => result,
+            Err(error) => {
+                budget::hold_if_rate_limited(budget, instance_host, &error).await;
+                return Err(classify(error));
+            }
+        };
         if result.items.is_empty() {
             break;
         }
