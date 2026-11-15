@@ -129,16 +129,32 @@ impl TokenSealer {
 ///
 /// The service sees the same bearer token on every request, so it needs a key to
 /// look up a user without storing the token itself. `sha256` of the token serves
-/// as that key: it is what the `token_fingerprint` column holds and what the
-/// verification cache is indexed by.
+/// as that key: it is what the `token_fingerprint` column holds (always paired
+/// with `instance_host` in queries), while [`verification_fingerprint`] binds a
+/// token to an instance host for the verification cache.
 #[must_use]
 pub fn fingerprint(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
 }
 
+/// Stable, non-reversible cache key binding a bearer token to an instance host.
+///
+/// An OAuth bearer token is only valid within the security boundary of its issuing
+/// instance, so verification cache keys must include the normalized `instance_host`
+/// alongside the token.
+#[must_use]
+pub fn verification_fingerprint(instance_host: &str, token: &str) -> [u8; 32] {
+    let normalized_host = instance_host.trim().to_ascii_lowercase();
+    let mut hasher = Sha256::new();
+    hasher.update(normalized_host.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(token.as_bytes());
+    hasher.finalize().into()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CryptoError, TokenSealer, fingerprint};
+    use super::{CryptoError, TokenSealer, fingerprint, verification_fingerprint};
 
     const KEY: &[u8] = b"0123456789abcdef0123456789abcdef";
 
@@ -217,5 +233,25 @@ mod tests {
     fn debug_output_does_not_leak_the_key() {
         let rendered = format!("{:?}", sealer());
         assert_eq!(rendered, "TokenSealer(<redacted>)");
+    }
+
+    #[test]
+    fn verification_fingerprint_binds_token_to_normalized_instance_host() {
+        assert_ne!(
+            verification_fingerprint("evil.example", "tok-123"),
+            verification_fingerprint("mastodon.social", "tok-123")
+        );
+        assert_eq!(
+            verification_fingerprint("Mastodon.Social", "tok-123"),
+            verification_fingerprint(" mastodon.social ", "tok-123")
+        );
+        assert_ne!(
+            verification_fingerprint("a", "bc"),
+            verification_fingerprint("ab", "c")
+        );
+        assert_ne!(
+            verification_fingerprint("mastodon.social", "tok-123"),
+            fingerprint("tok-123")
+        );
     }
 }
