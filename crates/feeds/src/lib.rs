@@ -21,11 +21,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 /// Where the engine keeps its tables when it runs inside another service's database.
-pub const SCHEMA: &str = "feeds";
+pub const SCHEMA: &str = nodus_store::ENGINE_SCHEMA;
 
 /// State for the in-process mount, built from the core service's own pool.
 ///
@@ -67,20 +66,7 @@ pub fn in_process(pool: PgPool, base_url: &str, max_connections: u32) -> state::
 ///
 /// Returns the database error if the schema cannot be applied or the pool cannot connect.
 pub async fn prepare(database_url: &str, max_connections: u32) -> Result<PgPool, sqlx::Error> {
-    let pool = PgPoolOptions::new()
-        .max_connections(max_connections)
-        .after_connect(|connection, _meta| {
-            Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO \"{SCHEMA}\", public"))
-                    .execute(connection)
-                    .await?;
-                Ok(())
-            })
-        })
-        .connect(database_url)
-        .await?;
-    nodus_store::migrate_into(&pool, SCHEMA).await?;
-    Ok(pool)
+    nodus_store::engine_pool(database_url, max_connections, SCHEMA).await
 }
 
 /// Apply the engine's schema and hand back its routes, ready to mount in a host process.

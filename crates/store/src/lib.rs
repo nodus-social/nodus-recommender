@@ -80,6 +80,41 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         .map_err(sqlx::Error::from)
 }
 
+/// Where the engine keeps its tables when it shares a database with its host.
+///
+/// The engine's `account` and `status` are its own mirrors, not the host's rows.
+pub const ENGINE_SCHEMA: &str = "feeds";
+
+/// A pool and a schema ready for engine work, with every connection resolving the
+/// engine's tables first.
+///
+/// Both the HTTP surface and the calculator open the engine this way, so a deployment
+/// that runs them apart from each other still sees one schema and one ledger.
+///
+/// # Errors
+///
+/// Returns a [`sqlx::Error`] if the pool cannot connect or the migrations fail.
+pub async fn engine_pool(
+    database_url: &str,
+    max_connections: u32,
+    schema: &str,
+) -> Result<PgPool, sqlx::Error> {
+    let statement = format!("SET search_path TO \"{schema}\", public");
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .after_connect(move |connection, _meta| {
+            let statement = statement.clone();
+            Box::pin(async move {
+                sqlx::query(&statement).execute(connection).await?;
+                Ok(())
+            })
+        })
+        .connect(database_url)
+        .await?;
+    migrate_into(&pool, schema).await?;
+    Ok(pool)
+}
+
 /// Apply the embedded migrations inside one schema, ledger included.
 ///
 /// The engine owns tables named `account`, `status` and `instance`. A host that already has
@@ -102,9 +137,20 @@ pub async fn migrate_into(pool: &PgPool, schema: &str) -> Result<(), sqlx::Error
     }
 
     let mut connection = pool.acquire().await?;
-    sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+    // Two services starting at once both create the schema: `IF NOT EXISTS` is not atomic
+    // against a concurrent creator, so the loser of the race gets a unique violation on
+    // `pg_namespace` and continues.
+    if let Err(error) = sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
         .execute(&mut *connection)
-        .await?;
+        .await
+    {
+        let duplicate = error
+            .as_database_error()
+            .is_some_and(|database| database.code().as_deref() == Some("23505"));
+        if !duplicate {
+            return Err(error);
+        }
+    }
     sqlx::query(&format!("SET search_path TO \"{schema}\", public"))
         .execute(&mut *connection)
         .await?;
