@@ -80,7 +80,7 @@ pub async fn graph(pool: &PgPool, user_id: Uuid) -> Result<Option<UserGraph>, sq
         "SELECT a.id \
          FROM app_user u \
          JOIN account a ON a.instance_host = u.instance_host \
-             AND a.mastodon_id = u.mastodon_account_id \
+             AND a.remote_id = u.instance_account_id \
          WHERE u.id = $1 AND u.deleted_at IS NULL",
     )
     .bind(user_id)
@@ -161,7 +161,7 @@ pub async fn co_followers(
              SELECT a.id AS account_id \
              FROM app_user u \
              JOIN account a ON a.instance_host = u.instance_host \
-                 AND a.mastodon_id = u.mastodon_account_id \
+                 AND a.remote_id = u.instance_account_id \
              WHERE u.id = $1 AND u.deleted_at IS NULL \
          ) \
          SELECT u2.id \
@@ -170,7 +170,7 @@ pub async fn co_followers(
          JOIN follow_edge f2 ON f2.followee_id = f1.followee_id \
          JOIN account a2 ON a2.id = f2.follower_id \
          JOIN app_user u2 ON u2.instance_host = a2.instance_host \
-             AND u2.mastodon_account_id = a2.mastodon_id \
+             AND u2.instance_account_id = a2.remote_id \
          WHERE u2.id <> $1 AND u2.deleted_at IS NULL \
          GROUP BY u2.id \
          ORDER BY count(DISTINCT f1.followee_id) DESC, u2.id \
@@ -254,7 +254,7 @@ pub async fn recently_changed_users(pool: &PgPool, limit: i64) -> Result<Vec<Uui
         "SELECT u.id \
          FROM app_user u \
          JOIN account a ON a.instance_host = u.instance_host \
-             AND a.mastodon_id = u.mastodon_account_id \
+             AND a.remote_id = u.instance_account_id \
          JOIN follow_edge f ON f.follower_id = a.id \
          WHERE u.deleted_at IS NULL \
              AND f.last_seen_at > now() - interval '1 day' \

@@ -8,17 +8,16 @@ use nodus_store::models::NewAccount;
 use nodus_store::{accounts, jobs, users};
 use sqlx::PgPool;
 
-async fn seed_user(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> (uuid::Uuid, i64) {
+async fn seed_user(pool: &PgPool, host: &str, remote_id: i64, acct: &str) -> (uuid::Uuid, i64) {
     users::ensure_instance(pool, host).await.expect("instance");
-    let user = users::upsert(pool, host, mastodon_id, acct)
+    let user = users::upsert(pool, host, &remote_id.to_string(), acct)
         .await
         .expect("user");
     accounts::upsert_many(
         pool,
         &[NewAccount {
             instance_host: host.to_owned(),
-            mastodon_id,
-            remote_id: None,
+            remote_id: remote_id.to_string(),
             acct: acct.to_owned(),
             display_name: None,
             followers_count: 0,
@@ -31,21 +30,20 @@ async fn seed_user(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> (
     )
     .await
     .expect("own account");
-    let account = accounts::find_id(pool, host, mastodon_id)
+    let account = accounts::find_id(pool, host, &remote_id.to_string())
         .await
         .expect("find own account")
         .expect("own account exists");
     (user.id, account)
 }
 
-async fn seed_account(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> i64 {
+async fn seed_account(pool: &PgPool, host: &str, remote_id: i64, acct: &str) -> i64 {
     users::ensure_instance(pool, host).await.expect("instance");
     accounts::upsert_many(
         pool,
         &[NewAccount {
             instance_host: host.to_owned(),
-            mastodon_id,
-            remote_id: None,
+            remote_id: remote_id.to_string(),
             acct: acct.to_owned(),
             display_name: None,
             followers_count: 0,
@@ -58,7 +56,7 @@ async fn seed_account(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -
     )
     .await
     .expect("account");
-    accounts::find_id(pool, host, mastodon_id)
+    accounts::find_id(pool, host, &remote_id.to_string())
         .await
         .expect("find account")
         .expect("account exists")
@@ -156,13 +154,13 @@ async fn the_tick_is_bounded(pool: PgPool) {
     // a producer that outruns its workers turns a backlog into a landslide.
     let users_to_seed = usize::try_from(USERS_PER_TICK).expect("bounded") + 3;
     for index in 0..users_to_seed {
-        let mastodon_id = i64::try_from(index).expect("small index") + 1;
+        let remote_id = i64::try_from(index).expect("small index") + 1;
         let acct = format!("user{index}");
-        let (_id, me) = seed_user(&pool, "local.test", mastodon_id, &acct).await;
+        let (_id, me) = seed_user(&pool, "local.test", remote_id, &acct).await;
         let followee = seed_account(
             &pool,
             "remote.test",
-            10_000 + mastodon_id,
+            10_000 + remote_id,
             &format!("f{index}"),
         )
         .await;

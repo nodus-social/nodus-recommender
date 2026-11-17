@@ -161,13 +161,13 @@ mod tests {
     async fn authed_state_and_headers(
         pool: sqlx::PgPool,
         host: &str,
-        mastodon_id: i64,
+        remote_id: i64,
         acct: &str,
     ) -> (AppState, HeaderMap, Uuid) {
         users::ensure_instance(&pool, host)
             .await
             .expect("ensure instance");
-        let user = users::upsert(&pool, host, mastodon_id, acct)
+        let user = users::upsert(&pool, host, &remote_id.to_string(), acct)
             .await
             .expect("upsert user");
         users::set_telemetry_opt_in(&pool, user.id, true)
@@ -187,7 +187,7 @@ mod tests {
                 key,
                 Identity {
                     instance_host: host.to_owned(),
-                    mastodon_account_id: mastodon_id,
+                    instance_account_id: remote_id.to_string(),
                     acct: acct.to_owned(),
                 },
             )
@@ -205,11 +205,10 @@ mod tests {
         (state, headers, user.id)
     }
 
-    fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
+    fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
         NewAccount {
             instance_host: host.to_owned(),
-            mastodon_id,
-            remote_id: None,
+            remote_id: remote_id.to_string(),
             acct: acct.to_owned(),
             display_name: None,
             followers_count: 0,
@@ -249,7 +248,7 @@ mod tests {
         users::ensure_instance(&pool, "remote.test")
             .await
             .expect("ensure remote");
-        let other = users::upsert(&pool, "home.test", 2, "other")
+        let other = users::upsert(&pool, "home.test", "2", "other")
             .await
             .expect("upsert other");
 
@@ -263,15 +262,15 @@ mod tests {
         )
         .await
         .expect("seed accounts");
-        let alice = accounts::find_id(&pool, "remote.test", 10)
+        let alice = accounts::find_id(&pool, "remote.test", "10")
             .await
             .expect("find alice")
             .expect("alice");
-        let bob = accounts::find_id(&pool, "remote.test", 11)
+        let bob = accounts::find_id(&pool, "remote.test", "11")
             .await
             .expect("find bob")
             .expect("bob");
-        let carol = accounts::find_id(&pool, "remote.test", 12)
+        let carol = accounts::find_id(&pool, "remote.test", "12")
             .await
             .expect("find carol")
             .expect("carol");
@@ -382,14 +381,14 @@ mod tests {
         users::ensure_instance(&pool, "remote.test")
             .await
             .expect("ensure remote");
-        let other = users::upsert(&pool, "home.test", 2, "other")
+        let other = users::upsert(&pool, "home.test", "2", "other")
             .await
             .expect("upsert other");
 
         accounts::upsert_many(&pool, &[new_account("remote.test", 10, "alice")])
             .await
             .expect("seed account");
-        let alice = accounts::find_id(&pool, "remote.test", 10)
+        let alice = accounts::find_id(&pool, "remote.test", "10")
             .await
             .expect("find alice")
             .expect("alice");

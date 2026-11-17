@@ -134,7 +134,7 @@ async fn assert_rejected_with_cached_identity(
             cache_key,
             Identity {
                 instance_host: cached_host.to_owned(),
-                mastodon_account_id: 109_384,
+                instance_account_id: "109_384".to_owned(),
                 acct: "victim".to_owned(),
             },
         )
@@ -200,7 +200,7 @@ async fn cached_identity_for_matching_instance_host_authenticates(pool: sqlx::Pg
             key,
             Identity {
                 instance_host: instance_host.to_owned(),
-                mastodon_account_id: 109_384,
+                instance_account_id: "109_384".to_owned(),
                 acct: "victim".to_owned(),
             },
         )
@@ -215,6 +215,25 @@ async fn cached_identity_for_matching_instance_host_authenticates(pool: sqlx::Pg
         .await
         .expect("matching host cache hit should authenticate");
     assert_eq!(authenticated.user.instance_host, instance_host);
-    assert_eq!(authenticated.user.mastodon_account_id, 109_384);
+    assert_eq!(authenticated.user.instance_account_id, "109_384");
     assert_eq!(authenticated.user.acct, "victim");
+}
+
+#[test]
+fn a_ulid_account_id_is_kept_verbatim() {
+    let ulid = "01M7GK5K46EA1TNQRY7N0N61YW";
+    assert_eq!(super::opaque_id(ulid), Some(ulid.to_owned()));
+}
+
+#[test]
+fn a_numeric_account_id_is_kept_verbatim() {
+    assert_eq!(super::opaque_id(" 109384 "), Some("109384".to_owned()));
+}
+
+#[test]
+fn an_unusable_account_id_is_refused() {
+    assert_eq!(super::opaque_id(""), None);
+    assert_eq!(super::opaque_id("   "), None);
+    assert_eq!(super::opaque_id("1 2"), None);
+    assert_eq!(super::opaque_id(&"9".repeat(65)), None);
 }

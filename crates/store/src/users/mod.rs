@@ -22,7 +22,7 @@ pub use sync::{SyncMaterial, clear_sync_token, set_sync_token, sync_material};
 pub use token_pool::{PooledToken, pick_token};
 
 /// Columns of [`AppUser`], with `citext` narrowed to `text` for sqlx.
-const USER_COLUMNS: &str = "id, instance_host::text AS instance_host, mastodon_account_id, \
+const USER_COLUMNS: &str = "id, instance_host::text AS instance_host, instance_account_id, \
      acct::text AS acct, sync_enabled, telemetry_opt_in, created_at, last_seen_at, deleted_at";
 
 /// Make sure the `instance` row exists, so account and user rows can reference it.
@@ -43,7 +43,7 @@ pub async fn ensure_instance(pool: &PgPool, host: &str) -> Result<(), sqlx::Erro
 
 /// Insert the user if unknown, otherwise refresh `acct` and `last_seen_at`.
 ///
-/// The unique key is `(instance_host, mastodon_account_id)`, not the handle: people
+/// The unique key is `(instance_host, instance_account_id)`, not the handle: people
 /// rename themselves, and a rename must not fork their recommendation history.
 ///
 /// # Errors
@@ -53,18 +53,18 @@ pub async fn ensure_instance(pool: &PgPool, host: &str) -> Result<(), sqlx::Erro
 pub async fn upsert(
     pool: &PgPool,
     instance_host: &str,
-    mastodon_account_id: i64,
+    instance_account_id: &str,
     acct: &str,
 ) -> Result<AppUser, sqlx::Error> {
     let sql = format!(
-        "INSERT INTO app_user (instance_host, mastodon_account_id, acct) VALUES ($1, $2, $3) \
-         ON CONFLICT (instance_host, mastodon_account_id) \
+        "INSERT INTO app_user (instance_host, instance_account_id, acct) VALUES ($1, $2, $3) \
+         ON CONFLICT (instance_host, instance_account_id) \
          DO UPDATE SET acct = EXCLUDED.acct, last_seen_at = now() \
          RETURNING {USER_COLUMNS}"
     );
     sqlx::query_as::<_, AppUser>(&sql)
         .bind(instance_host)
-        .bind(mastodon_account_id)
+        .bind(instance_account_id)
         .bind(acct)
         .fetch_one(pool)
         .await

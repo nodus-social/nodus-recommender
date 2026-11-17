@@ -41,13 +41,13 @@ fn account_json(id: i64, acct: &str, followers: u32) -> serde_json::Value {
 }
 
 /// A mirror added to the pool, to prove the test can seed rows directly.
-async fn seed_user(pool: &PgPool, host: &str, mastodon_id: i64, token: &str) -> Uuid {
+async fn seed_user(pool: &PgPool, host: &str, remote_id: i64, token: &str) -> Uuid {
     let sealer = sealer();
     let envelope = sealer.seal(token).expect("sealing works");
     users::ensure_instance(pool, host)
         .await
         .expect("instance row");
-    let user = users::upsert(pool, host, mastodon_id, "me")
+    let user = users::upsert(pool, host, &remote_id.to_string(), "me")
         .await
         .expect("user row");
 
@@ -115,7 +115,7 @@ async fn sync_user_walks_every_page_and_replaces_edges(pool: PgPool) {
 
     handler.run(&claimed[0]).await.expect("the crawl succeeds");
 
-    let own = accounts::find_id(&pool, &host, 900)
+    let own = accounts::find_id(&pool, &host, "900")
         .await
         .expect("lookup")
         .expect("own account exists");
@@ -123,7 +123,7 @@ async fn sync_user_walks_every_page_and_replaces_edges(pool: PgPool) {
     assert_eq!(follows.len(), 3, "three followed accounts, from two pages");
 
     // The accounts the crawl touched carry the instance's counts, not zeros.
-    let two = accounts::find_id(&pool, &host, 2)
+    let two = accounts::find_id(&pool, &host, "2")
         .await
         .expect("lookup")
         .expect("account two exists");
@@ -216,7 +216,7 @@ async fn a_missing_scope_stops_before_the_first_request(pool: PgPool) {
     users::ensure_instance(&pool, &host)
         .await
         .expect("instance");
-    let user = users::upsert(&pool, &host, 902, "me").await.expect("user");
+    let user = users::upsert(&pool, &host, "902", "me").await.expect("user");
     users::set_sync_token(
         &pool,
         user.id,

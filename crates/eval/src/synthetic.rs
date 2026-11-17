@@ -161,15 +161,15 @@ pub async fn seed(pool: &PgPool, shape: Shape, seed: u64) -> Result<(), sqlx::Er
     }
 
     // The app users sign in as their own accounts, so `app_user` and `account` agree on
-    // (instance_host, mastodon_account_id) — which is the join the graph loader uses.
+    // (instance_host, instance_account_id) — which is the join the graph loader uses.
     for user in 0..shape.users {
-        let mastodon_id = i64::try_from(user + 1).unwrap_or(1);
+        let remote_id = i64::try_from(user + 1).unwrap_or(1);
         sqlx::query(
-            "INSERT INTO app_user (instance_host, mastodon_account_id, acct) \
+            "INSERT INTO app_user (instance_host, instance_account_id, acct) \
              VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
         )
         .bind(HOST)
-        .bind(mastodon_id)
+        .bind(remote_id)
         .bind(format!("synthetic{user}"))
         .execute(pool)
         .await?;
@@ -194,7 +194,7 @@ async fn insert_accounts(
             40 + i64::try_from(rng.below(4_000)).unwrap_or(0)
         };
         sqlx::query(
-            "INSERT INTO account (instance_host, mastodon_id, acct, display_name, followers_count) \
+            "INSERT INTO account (instance_host, remote_id, acct, display_name, followers_count) \
              VALUES ($1, $2, $3, $3, $4)",
         )
         .bind(HOST)
@@ -206,15 +206,15 @@ async fn insert_accounts(
     }
 
     Ok(sqlx::query_as::<_, (i64, i64)>(
-        "SELECT mastodon_id, id FROM account WHERE instance_host = $1",
+        "SELECT remote_id, id FROM account WHERE instance_host = $1",
     )
     .bind(HOST)
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|(mastodon_id, id)| {
+    .map(|(remote_id, id)| {
         (
-            usize::try_from(mastodon_id).unwrap_or(0).saturating_sub(1),
+            usize::try_from(remote_id).unwrap_or(0).saturating_sub(1),
             id,
         )
     })

@@ -39,11 +39,10 @@ fn account_json(id: i64, acct: &str, followers: u32) -> serde_json::Value {
     })
 }
 
-fn new_account(host: &str, mastodon_id: i64, remote_id: Option<&str>, acct: &str) -> NewAccount {
+fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: remote_id.map(str::to_owned),
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: 10,
@@ -78,7 +77,7 @@ async fn local_account_crawl_decodes_citext_and_records_edges(pool: PgPool) {
     users::ensure_instance(&pool, &home_host)
         .await
         .expect("instance");
-    let user = users::upsert(&pool, &home_host, 1, "me")
+    let user = users::upsert(&pool, &home_host, "1", "me")
         .await
         .expect("user");
     users::set_sync_token(
@@ -91,10 +90,10 @@ async fn local_account_crawl_decodes_citext_and_records_edges(pool: PgPool) {
     .await
     .expect("token stored");
 
-    accounts::upsert_many(&pool, &[new_account(&home_host, 42, None, "alice")])
+    accounts::upsert_many(&pool, &[new_account(&home_host, 42, "alice")])
         .await
         .expect("alice account");
-    let alice_id = accounts::find_id(&pool, &home_host, 42)
+    let alice_id = accounts::find_id(&pool, &home_host, "42")
         .await
         .expect("lookup")
         .expect("alice exists");
@@ -128,11 +127,11 @@ async fn local_account_crawl_decodes_citext_and_records_edges(pool: PgPool) {
         .await
         .expect("local profile crawl succeeds");
 
-    let bob_id = accounts::find_id(&pool, &home_host, 101)
+    let bob_id = accounts::find_id(&pool, &home_host, "101")
         .await
         .expect("lookup")
         .expect("bob upserted");
-    let carol_id = accounts::find_id(&pool, &home_host, 102)
+    let carol_id = accounts::find_id(&pool, &home_host, "102")
         .await
         .expect("lookup")
         .expect("carol upserted");
@@ -155,23 +154,23 @@ async fn remote_account_resolves_origin_id_creates_instance_and_maps_origin_edge
         .await
         .expect("home instance");
 
-    // Seed target on home.test with shadow mastodon_id = 999 and remote_id = None,
-    // plus a decoy account on home.test sharing mastodon_id = 201 with an origin followee.
+    // Seed target on home.test with shadow remote_id = 999 and remote_id = None,
+    // plus a decoy account on home.test sharing remote_id = 201 with an origin followee.
     let remote_acct = format!("alice@{origin_host}");
     accounts::upsert_many(
         &pool,
         &[
-            new_account(home_host, 999, None, &remote_acct),
-            new_account(home_host, 201, None, "decoy"),
+            new_account(home_host, 999, &remote_acct),
+            new_account(home_host, 201, "decoy"),
         ],
     )
     .await
     .expect("seed accounts");
-    let alice_id = accounts::find_id(&pool, home_host, 999)
+    let alice_id = accounts::find_id(&pool, home_host, "999")
         .await
         .expect("lookup")
         .expect("alice exists");
-    let decoy_id = accounts::find_id(&pool, home_host, 201)
+    let decoy_id = accounts::find_id(&pool, home_host, "201")
         .await
         .expect("lookup")
         .expect("decoy exists");
@@ -222,25 +221,25 @@ async fn remote_account_resolves_origin_id_creates_instance_and_maps_origin_edge
         .await
         .expect("get")
         .expect("alice");
-    assert_eq!(stored.remote_id.as_deref(), Some("42"));
+    assert_eq!(stored.origin_id.as_deref(), Some("42"));
 
     // 2. Origin instance row was ensured, and crawled followees/followers live under origin_host.
-    let bob_id = accounts::find_id(&pool, &origin_host, 201)
+    let bob_id = accounts::find_id(&pool, &origin_host, "201")
         .await
         .expect("lookup")
         .expect("bob upserted under origin_host");
-    let carol_id = accounts::find_id(&pool, &origin_host, 202)
+    let carol_id = accounts::find_id(&pool, &origin_host, "202")
         .await
         .expect("lookup")
         .expect("carol upserted under origin_host");
-    let dave_id = accounts::find_id(&pool, &origin_host, 301)
+    let dave_id = accounts::find_id(&pool, &origin_host, "301")
         .await
         .expect("lookup")
         .expect("dave (follower) upserted under origin_host");
     assert_ne!(bob_id, decoy_id);
     assert_ne!(dave_id, 0);
     assert!(
-        accounts::find_id(&pool, home_host, 301)
+        accounts::find_id(&pool, home_host, "301")
             .await
             .expect("lookup")
             .is_none(),
@@ -266,16 +265,16 @@ async fn remote_account_with_cached_remote_id_skips_lookup(pool: PgPool) {
         .expect("home instance");
 
     let remote_acct = format!("alice@{origin_host}");
-    accounts::upsert_many(
-        &pool,
-        &[new_account(home_host, 999, Some("42"), &remote_acct)],
-    )
-    .await
-    .expect("seed account");
-    let alice_id = accounts::find_id(&pool, home_host, 999)
+    accounts::upsert_many(&pool, &[new_account(home_host, 999, &remote_acct)])
+        .await
+        .expect("seed account");
+    let alice_id = accounts::find_id(&pool, home_host, "999")
         .await
         .expect("lookup")
         .expect("alice exists");
+    accounts::set_origin_id(&pool, alice_id, "42")
+        .await
+        .expect("origin id");
 
     Mock::given(method("GET"))
         .and(path("/api/v1/accounts/lookup"))
@@ -307,7 +306,7 @@ async fn remote_account_with_cached_remote_id_skips_lookup(pool: PgPool) {
         .await
         .expect("cached remote_id crawl succeeds");
 
-    let bob_id = accounts::find_id(&pool, &origin_host, 201)
+    let bob_id = accounts::find_id(&pool, &origin_host, "201")
         .await
         .expect("lookup")
         .expect("bob upserted");
@@ -327,10 +326,10 @@ async fn missing_remote_lookup_never_falls_back_to_local_shadow_id(pool: PgPool)
         .expect("home instance");
 
     let remote_acct = format!("ghost@{origin_host}");
-    accounts::upsert_many(&pool, &[new_account(home_host, 999, None, &remote_acct)])
+    accounts::upsert_many(&pool, &[new_account(home_host, 999, &remote_acct)])
         .await
         .expect("seed account");
-    let ghost_id = accounts::find_id(&pool, home_host, 999)
+    let ghost_id = accounts::find_id(&pool, home_host, "999")
         .await
         .expect("lookup")
         .expect("ghost exists");

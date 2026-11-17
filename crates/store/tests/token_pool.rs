@@ -13,8 +13,8 @@ const HOST: &str = "pool.test";
 const GRAPH_SCOPES: [&str; 1] = ["read:follows"];
 
 /// A user on [`HOST`] with a readable graph token sealed into `b"sealed"`.
-async fn seed(pool: &PgPool, mastodon_id: i64, token: &str) -> Uuid {
-    let user = users::upsert(pool, HOST, mastodon_id, &format!("user{mastodon_id}"))
+async fn seed(pool: &PgPool, remote_id: i64, token: &str) -> Uuid {
+    let user = users::upsert(pool, HOST, &remote_id.to_string(), &format!("user{remote_id}"))
         .await
         .expect("user");
     users::set_sync_token(
@@ -62,7 +62,7 @@ async fn pick_token_prefers_never_used_then_the_oldest(pool: PgPool) {
     // The clock starts at NULL, which outranks any timestamp.
     let first = pick(&pool, &[]).await;
     assert_eq!(first.user_id, never);
-    assert_eq!(first.mastodon_account_id, 1);
+    assert_eq!(first.instance_account_id, "1");
     assert_eq!(first.token_scopes, GRAPH_SCOPES.map(str::to_owned));
 
     // The first pick stamped its row, so the two-hour-old token is next.
@@ -81,7 +81,7 @@ async fn pick_token_skips_excluded_fingerprints(pool: PgPool) {
 
     let picked = pick(&pool, &[fingerprint("first")]).await;
     assert_eq!(picked.user_id, second);
-    assert_eq!(picked.mastodon_account_id, 11);
+    assert_eq!(picked.instance_account_id, "11");
 
     let none = users::pick_token(&pool, HOST, &[fingerprint("first"), fingerprint("second")])
         .await
@@ -102,7 +102,7 @@ async fn pick_token_skips_disabled_deleted_and_scopeless_rows(pool: PgPool) {
     let deleted = seed(&pool, 22, "deleted").await;
     users::soft_delete(&pool, deleted).await.expect("deleted");
 
-    let scopeless = users::upsert(&pool, HOST, 23, "scopeless")
+    let scopeless = users::upsert(&pool, HOST, "23", "scopeless")
         .await
         .expect("user");
     users::set_sync_token(

@@ -64,7 +64,7 @@ impl SyncUser {
         token: &Token,
         subject: &Subject,
     ) -> Result<Vec<i64>, AttemptError> {
-        let me = LocalId(subject.mastodon_account_id.to_string());
+        let me = LocalId(subject.instance_account_id.clone());
         let mut params = PageParams::first(self.config.page_size);
         let mut follows = Vec::new();
         let mut pages = 0_usize;
@@ -82,13 +82,8 @@ impl SyncUser {
                 .map(|account| {
                     Ok(NewAccount {
                         instance_host: subject.instance_host.clone(),
-                        mastodon_id: account.id.parse::<i64>().map_err(|e| {
-                            AttemptError::Fatal(JobError::permanent(format!(
-                                "instance sent a non-numeric account id `{}`: {e}",
-                                account.id
-                            )))
-                        })?,
-                        remote_id: None,
+                        // Opaque by contract: whatever this instance calls the account.
+                        remote_id: account.id.trim().to_owned(),
                         acct: account.acct.clone(),
                         display_name: optional_text(&account.display_name),
                         followers_count: i32::try_from(account.followers_count).unwrap_or(i32::MAX),
@@ -105,13 +100,13 @@ impl SyncUser {
                 .await
                 .map_err(|e| AttemptError::Fatal(database(&e)))?;
 
-            let mastodon_ids: Vec<i64> = batch.iter().map(|account| account.mastodon_id).collect();
-            let resolved = accounts::resolve_ids(&self.pool, &subject.instance_host, &mastodon_ids)
+            let remote_ids: Vec<String> = batch.iter().map(|account| account.remote_id.clone()).collect();
+            let resolved = accounts::resolve_ids(&self.pool, &subject.instance_host, &remote_ids)
                 .await
                 .map_err(|e| AttemptError::Fatal(database(&e)))?;
-            if resolved.len() != mastodon_ids.len() {
+            if resolved.len() != remote_ids.len() {
                 warn!(
-                    expected = mastodon_ids.len(),
+                    expected = remote_ids.len(),
                     resolved = resolved.len(),
                     "a follow page partially resolved after upsert"
                 );

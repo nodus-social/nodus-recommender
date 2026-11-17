@@ -23,7 +23,7 @@ fn poll<F: std::future::Future>(future: F) -> F::Output {
 fn identity(acct: &str) -> Identity {
     Identity {
         instance_host: "example.social".to_owned(),
-        mastodon_account_id: 1,
+        instance_account_id: "1".to_owned(),
         acct: acct.to_owned(),
     }
 }
@@ -195,7 +195,7 @@ async fn a_legacy_shared_entry_without_instance_host_is_treated_as_a_miss() {
     let shared = Arc::new(CountingCache::new(false));
     let cache = layered(Arc::clone(&shared));
     let key = [4_u8; 32];
-    let legacy = br#"{"mastodon_account_id":109384,"acct":"victim"}"#;
+    let legacy = br#"{"instance_account_id":109384,"acct":"victim"}"#;
     shared
         .set("verify:legacy", legacy, Duration::from_secs(60))
         .await

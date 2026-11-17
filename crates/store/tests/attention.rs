@@ -11,11 +11,10 @@ use nodus_store::users;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
+fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: 0,
@@ -57,11 +56,11 @@ async fn impression(pool: &PgPool, user: Uuid, account: i64, dwell_ms: i32) {
 async fn the_baseline_is_the_median_of_the_readers_own_impressions(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
     accounts::upsert_many(&pool, &[new_account("remote.test", 10, "alice")])
         .await
         .unwrap();
-    let alice = accounts::find_id(&pool, "remote.test", 10)
+    let alice = accounts::find_id(&pool, "remote.test", "10")
         .await
         .unwrap()
         .expect("alice exists");
@@ -133,11 +132,11 @@ async fn the_baseline_is_the_median_of_the_readers_own_impressions(pool: PgPool)
 async fn impressions_older_than_the_window_do_not_count(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
     accounts::upsert_many(&pool, &[new_account("remote.test", 10, "alice")])
         .await
         .unwrap();
-    let alice = accounts::find_id(&pool, "remote.test", 10)
+    let alice = accounts::find_id(&pool, "remote.test", "10")
         .await
         .unwrap()
         .expect("alice exists");

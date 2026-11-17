@@ -84,7 +84,7 @@ pub(super) async fn run(
 
     let sealed = pick_token(pool, &account.instance_host).await?;
     let (api, bucket) = transport_with_bucket(&account.instance_host, &sealed, config)?;
-    let author = LocalId(account.mastodon_id.to_string());
+    let author = LocalId(account.remote_id.clone());
     let (batch, avatar) = walk(
         &api,
         &author,
@@ -188,7 +188,7 @@ async fn refresh_remote(
             return Err(classify(error));
         }
     };
-    accounts::set_remote_id(pool, account.id, &remote.id)
+    accounts::set_origin_id(pool, account.id, &remote.id)
         .await
         .map_err(|error| database(&error))?;
 
@@ -355,15 +355,15 @@ pub(crate) fn map_status(
     if !matches!(status.visibility, Visibility::Public | Visibility::Unlisted) {
         return None;
     }
+    // Verbatim, never hashed: the id has to survive a round trip to the instance.
     let remote_id = status.id.clone();
-    let mastodon_id = remote_id
-        .parse::<i64>()
-        .unwrap_or_else(|_| stable_id(instance_host, &remote_id));
+    if remote_id.trim().is_empty() {
+        return None;
+    }
     let published_at = OffsetDateTime::parse(&status.created_at, &Rfc3339).ok()?;
 
     Some(NewStatus {
         instance_host: instance_host.to_owned(),
-        mastodon_id,
         remote_id,
         account_id,
         content: status.content.clone(),
@@ -379,18 +379,6 @@ pub(crate) fn map_status(
         spoiler_text: status.spoiler_text.clone(),
         emojis: status.emojis.iter().map(post_emoji).collect(),
     })
-}
-
-/// A stable signed id for an origin whose ids are not integers.
-///
-/// FNV-1a over `host|id`; the top bit is cleared so the value fits `bigint`.
-fn stable_id(host: &str, id: &str) -> i64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in host.bytes().chain(std::iter::once(b'|')).chain(id.bytes()) {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    i64::try_from(hash & 0x7fff_ffff_ffff_ffff).unwrap_or(i64::MAX)
 }
 
 /// The wire shape keeps Mastodon's `type` spelling between the two structs.

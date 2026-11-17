@@ -13,8 +13,7 @@ async fn retain_batch_enforces_post_days_on_existing_statuses(pool: PgPool) {
         &pool,
         &[NewAccount {
             instance_host: host.to_owned(),
-            mastodon_id: 1,
-            remote_id: None,
+            remote_id: "1".to_owned(),
             acct: "alice".to_owned(),
             display_name: None,
             followers_count: 10,
@@ -27,7 +26,7 @@ async fn retain_batch_enforces_post_days_on_existing_statuses(pool: PgPool) {
     )
     .await
     .expect("author");
-    let author = accounts::find_id(&pool, host, 1)
+    let author = accounts::find_id(&pool, host, "1")
         .await
         .expect("find")
         .expect("exists");
@@ -35,12 +34,12 @@ async fn retain_batch_enforces_post_days_on_existing_statuses(pool: PgPool) {
     // Stale post fetched 10 days ago with an expires_at 4 days in the future (from a 14-day stamp),
     // and a fresh post fetched 2 days ago.
     sqlx::query(
-        "INSERT INTO status (instance_host, mastodon_id, remote_id, account_id, content, \
+        "INSERT INTO status (instance_host, remote_id, account_id, content, \
              visibility, created_at, fetched_at, expires_at) \
          VALUES \
-             ($1, 1, '1', $2, 'stale', 'public', now() - interval '10 days', \
+             ($1, '1', $2, 'stale', 'public', now() - interval '10 days', \
               now() - interval '10 days', now() + interval '4 days'), \
-             ($1, 2, '2', $2, 'fresh', 'public', now() - interval '2 days', \
+             ($1, '2', $2, 'fresh', 'public', now() - interval '2 days', \
               now() - interval '2 days', now() + interval '12 days')",
     )
     .bind(host)
@@ -70,13 +69,13 @@ async fn retain_batch_enforces_post_days_on_existing_statuses(pool: PgPool) {
 async fn retain_batch_hard_deletes_soft_deleted_users_after_30_days(pool: PgPool) {
     let host = "users.example";
     users::ensure_instance(&pool, host).await.expect("instance");
-    let old_deleted = users::upsert(&pool, host, 1, "old_deleted")
+    let old_deleted = users::upsert(&pool, host, "1", "old_deleted")
         .await
         .expect("old deleted");
-    let recent_deleted = users::upsert(&pool, host, 2, "recent_deleted")
+    let recent_deleted = users::upsert(&pool, host, "2", "recent_deleted")
         .await
         .expect("recent deleted");
-    let active = users::upsert(&pool, host, 3, "active")
+    let active = users::upsert(&pool, host, "3", "active")
         .await
         .expect("active");
 
@@ -97,7 +96,7 @@ async fn retain_batch_hard_deletes_soft_deleted_users_after_30_days(pool: PgPool
     assert_eq!(report.users, 1);
 
     let remaining: Vec<uuid::Uuid> =
-        sqlx::query_scalar("SELECT id FROM app_user ORDER BY mastodon_account_id")
+        sqlx::query_scalar("SELECT id FROM app_user ORDER BY instance_account_id")
             .fetch_all(&pool)
             .await
             .expect("remaining users");

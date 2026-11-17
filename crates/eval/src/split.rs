@@ -46,7 +46,7 @@ pub async fn load(pool: &PgPool, cutoff: OffsetDateTime) -> Result<Graph, sqlx::
          FROM app_user u \
          JOIN account a \
            ON a.instance_host = u.instance_host \
-          AND a.mastodon_id = u.mastodon_account_id \
+          AND a.remote_id = u.instance_account_id \
          WHERE u.deleted_at IS NULL \
          ORDER BY u.created_at, u.id",
     )

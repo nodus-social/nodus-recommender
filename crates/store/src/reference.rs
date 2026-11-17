@@ -66,7 +66,7 @@ pub async fn gated(pool: &PgPool, limit: i64) -> Result<Vec<Reference>, sqlx::Er
                    SELECT 1
                      FROM app_user u
                     WHERE u.instance_host = a.instance_host
-                      AND u.mastodon_account_id = a.mastodon_id
+                      AND u.instance_account_id = a.remote_id
                )
          GROUP BY a.id, a.following_count
         HAVING count(f.followee_id) >= $1

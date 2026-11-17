@@ -12,11 +12,10 @@ use nodus_store::two_hop;
 use nodus_store::users;
 use sqlx::PgPool;
 
-fn account(host: &str, mastodon_id: i64, acct: &str, followers: i32) -> NewAccount {
+fn account(host: &str, remote_id: i64, acct: &str, followers: i32) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: followers,
@@ -29,8 +28,8 @@ fn account(host: &str, mastodon_id: i64, acct: &str, followers: i32) -> NewAccou
 }
 
 /// Resolve a remote account id, which most assertions need.
-async fn remote_id(pool: &PgPool, mastodon_id: i64) -> i64 {
-    accounts::find_id(pool, "remote.test", mastodon_id)
+async fn remote_id(pool: &PgPool, remote_id: i64) -> i64 {
+    accounts::find_id(pool, "remote.test", &remote_id.to_string())
         .await
         .unwrap()
         .expect("account exists")
@@ -40,7 +39,7 @@ async fn remote_id(pool: &PgPool, mastodon_id: i64) -> i64 {
 async fn candidates_arrive_through_followees_and_never_through_the_reader(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
 
     accounts::upsert_many(
         &pool,
@@ -55,7 +54,7 @@ async fn candidates_arrive_through_followees_and_never_through_the_reader(pool: 
     .await
     .unwrap();
 
-    let me = accounts::find_id(&pool, "home.test", 1)
+    let me = accounts::find_id(&pool, "home.test", "1")
         .await
         .unwrap()
         .expect("own account exists");
@@ -98,7 +97,7 @@ async fn candidates_arrive_through_followees_and_never_through_the_reader(pool: 
 async fn an_engaged_bridge_weighs_more_than_a_stranger(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
 
     accounts::upsert_many(
         &pool,
@@ -113,19 +112,19 @@ async fn an_engaged_bridge_weighs_more_than_a_stranger(pool: PgPool) {
     .await
     .unwrap();
 
-    let ids = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT mastodon_id, id FROM account WHERE instance_host = 'remote.test'",
+    let ids = sqlx::query_as::<_, (String, i64)>(
+        "SELECT remote_id, id FROM account WHERE instance_host = 'remote.test'",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
-    let id = |mastodon_id: i64| {
+    let id = |remote_id: i64| {
         ids.iter()
-            .find(|(remote, _)| *remote == mastodon_id)
+            .find(|(remote, _)| *remote == remote_id.to_string())
             .map(|(_, local)| *local)
             .expect("account exists")
     };
-    let me = accounts::find_id(&pool, "home.test", 1)
+    let me = accounts::find_id(&pool, "home.test", "1")
         .await
         .unwrap()
         .expect("own account exists");
@@ -169,7 +168,7 @@ async fn an_engaged_bridge_weighs_more_than_a_stranger(pool: PgPool) {
 async fn support_counts_distinct_bridges(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
 
     accounts::upsert_many(
         &pool,
@@ -183,7 +182,7 @@ async fn support_counts_distinct_bridges(pool: PgPool) {
     .await
     .unwrap();
 
-    let me = accounts::find_id(&pool, "home.test", 1)
+    let me = accounts::find_id(&pool, "home.test", "1")
         .await
         .unwrap()
         .expect("own account exists");

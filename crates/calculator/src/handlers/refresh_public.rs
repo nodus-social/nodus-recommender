@@ -102,7 +102,7 @@ impl Handler for RefreshPublic {
                 let Some(account) = account_row(host, &status.account) else {
                     continue;
                 };
-                if seen.insert(account.mastodon_id) {
+                if seen.insert(account.remote_id.clone()) {
                     authors.push(account);
                 }
             }
@@ -116,10 +116,7 @@ impl Handler for RefreshPublic {
                 if status.reblog.is_some() {
                     continue;
                 }
-                let Ok(mastodon_id) = status.account.id.parse::<i64>() else {
-                    continue;
-                };
-                let Some(local_id) = accounts::find_id(&self.pool, host, mastodon_id)
+                let Some(local_id) = accounts::find_id(&self.pool, host, &status.account.id)
                     .await
                     .map_err(|error| database(&error))?
                 else {
@@ -145,11 +142,13 @@ impl Handler for RefreshPublic {
 }
 
 fn account_row(host: &str, account: &nodus_client_core::model::Account) -> Option<NewAccount> {
-    let mastodon_id = account.id.parse::<i64>().ok()?;
+    let remote_id = account.id.trim();
+    if remote_id.is_empty() {
+        return None;
+    }
     Some(NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_owned(),
         acct: account.acct.clone(),
         display_name: Some(account.display_name.clone()),
         followers_count: i32::try_from(account.followers_count).unwrap_or(i32::MAX),

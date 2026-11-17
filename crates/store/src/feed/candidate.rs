@@ -99,7 +99,7 @@ pub async fn candidates(
              SELECT a.id AS account_id, a.instance_host \
              FROM app_user u \
              JOIN account a ON a.instance_host = u.instance_host \
-                 AND a.mastodon_id = u.mastodon_account_id \
+                 AND a.remote_id = u.instance_account_id \
              WHERE u.id = $1 \
          ) \
          SELECT af.account_id, af.affinity::float8 AS affinity, af.support, af.sources, \

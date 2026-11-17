@@ -9,9 +9,9 @@ use crate::models::{Account, NewAccount};
 use sqlx::PgPool;
 
 /// Columns of [`Account`], with `citext` narrowed to `text` for sqlx.
-const ACCOUNT_COLUMNS: &str = "id, instance_host::text AS instance_host, mastodon_id, remote_id, \
-     acct::text AS acct, display_name, followers_count, bot, locked, last_fetched_at, \
-     moved_to_account_id";
+const ACCOUNT_COLUMNS: &str = "id, instance_host::text AS instance_host, remote_id, \
+     origin_id, acct::text AS acct, display_name, followers_count, bot, locked, \
+     last_fetched_at, moved_to_account_id";
 
 /// Insert or refresh a batch of accounts.
 ///
@@ -28,8 +28,7 @@ pub async fn upsert_many(pool: &PgPool, accounts: &[NewAccount]) -> Result<u64, 
         return Ok(0);
     }
     let hosts: Vec<String> = accounts.iter().map(|a| a.instance_host.clone()).collect();
-    let ids: Vec<i64> = accounts.iter().map(|a| a.mastodon_id).collect();
-    let remote_ids: Vec<Option<&str>> = accounts.iter().map(|a| a.remote_id.as_deref()).collect();
+    let remote_ids: Vec<&str> = accounts.iter().map(|a| a.remote_id.as_str()).collect();
     let accts: Vec<String> = accounts.iter().map(|a| a.acct.clone()).collect();
     let names: Vec<Option<String>> = accounts.iter().map(|a| a.display_name.clone()).collect();
     let followers: Vec<i32> = accounts.iter().map(|a| a.followers_count).collect();
@@ -40,16 +39,15 @@ pub async fn upsert_many(pool: &PgPool, accounts: &[NewAccount]) -> Result<u64, 
     let noindex: Vec<Option<bool>> = accounts.iter().map(|a| a.noindex).collect();
 
     let result = sqlx::query(
-        "INSERT INTO account (instance_host, mastodon_id, remote_id, acct, display_name, \
+        "INSERT INTO account (instance_host, remote_id, acct, display_name, \
              followers_count, bot, locked, last_fetched_at, discoverable, indexable, noindex) \
-         SELECT host, mastodon_id, remote_id, acct, display_name, followers_count, bot, locked, \
+         SELECT host, remote_id, acct, display_name, followers_count, bot, locked, \
                 NULL, discoverable, indexable, noindex \
-         FROM UNNEST($1::text[], $2::bigint[], $3::text[], $4::text[], $5::text[], $6::int[], \
-                     $7::bool[], $8::bool[], $9::bool[], $10::bool[], $11::bool[]) \
-             AS page (host, mastodon_id, remote_id, acct, display_name, followers_count, bot, \
+         FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::int[], \
+                     $6::bool[], $7::bool[], $8::bool[], $9::bool[], $10::bool[]) \
+             AS page (host, remote_id, acct, display_name, followers_count, bot, \
                       locked, discoverable, indexable, noindex) \
-         ON CONFLICT (instance_host, mastodon_id) DO UPDATE SET \
-             remote_id = COALESCE(EXCLUDED.remote_id, account.remote_id), \
+         ON CONFLICT (instance_host, remote_id) DO UPDATE SET \
              acct = EXCLUDED.acct, \
              display_name = COALESCE(EXCLUDED.display_name, account.display_name), \
              followers_count = EXCLUDED.followers_count, \
@@ -61,7 +59,6 @@ pub async fn upsert_many(pool: &PgPool, accounts: &[NewAccount]) -> Result<u64, 
              updated_at = now()",
     )
     .bind(&hosts)
-    .bind(&ids)
     .bind(&remote_ids)
     .bind(&accts)
     .bind(&names)
@@ -97,15 +94,33 @@ pub async fn get(pool: &PgPool, id: i64) -> Result<Option<Account>, sqlx::Error>
 pub async fn find_id(
     pool: &PgPool,
     instance_host: &str,
-    mastodon_id: i64,
+    remote_id: &str,
 ) -> Result<Option<i64>, sqlx::Error> {
     sqlx::query_scalar::<_, i64>(
-        "SELECT id FROM account WHERE instance_host = $1 AND mastodon_id = $2",
+        "SELECT id FROM account WHERE instance_host = $1 AND remote_id = $2",
     )
     .bind(instance_host)
-    .bind(mastodon_id)
+    .bind(remote_id)
     .fetch_optional(pool)
     .await
+}
+
+/// Remember the account id on the account's own instance.
+///
+/// The id a follow list reports is the reporting instance's, so the origin's own id has
+/// to be learned separately, by a lookup against the origin. Null means "not learned
+/// yet", never "no id".
+///
+/// # Errors
+///
+/// Propagates [`sqlx::Error`].
+pub async fn set_origin_id(pool: &PgPool, id: i64, origin_id: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE account SET origin_id = $2, updated_at = now() WHERE id = $1")
+        .bind(id)
+        .bind(origin_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Replace the follow set of one account.
@@ -179,7 +194,7 @@ pub async fn needing_status_refresh(pool: &PgPool, limit: i64) -> Result<Vec<i64
                        ON u.instance_host = a.instance_host \
                      JOIN account me \
                        ON me.instance_host = u.instance_host \
-                      AND me.mastodon_id = u.mastodon_account_id \
+                      AND me.remote_id = u.instance_account_id \
                      WHERE second_hop.target_account_id = a.id \
                        AND first_hop.follower_id = me.id \
                  ) \
@@ -190,7 +205,7 @@ pub async fn needing_status_refresh(pool: &PgPool, limit: i64) -> Result<Vec<i64
                      JOIN app_user u ON u.instance_host = a.instance_host \
                      JOIN account me \
                        ON me.instance_host = u.instance_host \
-                      AND me.mastodon_id = u.mastodon_account_id \
+                      AND me.remote_id = u.instance_account_id \
                      WHERE pe.target_account_id = a.id \
                        AND pe.kind = 'follow' \
                        AND f.follower_id = me.id \
@@ -252,27 +267,6 @@ pub async fn record_engagement(
 /// # Errors
 ///
 /// Propagates [`sqlx::Error`].
-/// Remember the id the account has on its own instance.
-///
-/// # Errors
-///
-/// Propagates [`sqlx::Error`].
-pub async fn set_remote_id(
-    pool: &PgPool,
-    account_id: i64,
-    remote_id: &str,
-) -> Result<(), sqlx::Error> {
-    if remote_id.trim().is_empty() {
-        return Ok(());
-    }
-    sqlx::query("UPDATE account SET remote_id = $2, updated_at = now() WHERE id = $1 AND remote_id IS DISTINCT FROM $2")
-        .bind(account_id)
-        .bind(remote_id)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 pub async fn set_avatar(
     pool: &PgPool,
     account_id: i64,
@@ -306,17 +300,17 @@ pub async fn set_avatar(
 pub async fn resolve_ids(
     pool: &PgPool,
     instance_host: &str,
-    mastodon_ids: &[i64],
-) -> Result<Vec<(i64, i64)>, sqlx::Error> {
-    if mastodon_ids.is_empty() {
+    remote_ids: &[String],
+) -> Result<Vec<(i64, String)>, sqlx::Error> {
+    if remote_ids.is_empty() {
         return Ok(Vec::new());
     }
-    sqlx::query_as::<_, (i64, i64)>(
-        "SELECT id, mastodon_id FROM account \
-         WHERE instance_host = $1 AND mastodon_id = ANY($2)",
+    sqlx::query_as::<_, (i64, String)>(
+        "SELECT id, remote_id FROM account \
+         WHERE instance_host = $1 AND remote_id = ANY($2)",
     )
     .bind(instance_host)
-    .bind(mastodon_ids)
+    .bind(remote_ids)
     .fetch_all(pool)
     .await
 }

@@ -71,11 +71,10 @@ fn status_json(id: &str, author_id: i64, author_acct: &str, host: &str) -> serde
     })
 }
 
-fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
+fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: 10,
@@ -90,7 +89,7 @@ fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
 async fn seed_token(pool: &PgPool, sealer: &TokenSealer, host: &str, raw_token: &str) {
     let envelope = sealer.seal(raw_token).expect("seal token");
     users::ensure_instance(pool, host).await.expect("instance");
-    let user = users::upsert(pool, host, 1, "seeder")
+    let user = users::upsert(pool, host, "1", "seeder")
         .await
         .expect("seeder user");
     users::set_sync_token(
@@ -121,7 +120,7 @@ async fn refresh_profile_enforces_budget_pacing_and_429_holds(pool: PgPool) {
     accounts::upsert_many(&pool, &[new_account(&host, 42, "alice")])
         .await
         .expect("alice");
-    let alice_id = accounts::find_id(&pool, &host, 42)
+    let alice_id = accounts::find_id(&pool, &host, "42")
         .await
         .expect("lookup")
         .expect("alice id");
@@ -317,11 +316,11 @@ async fn refresh_account_shares_budget_across_concurrent_jobs_and_applies_post_d
     )
     .await
     .expect("seed authors");
-    let first_id = accounts::find_id(&pool, &host, 10)
+    let first_id = accounts::find_id(&pool, &host, "10")
         .await
         .expect("lookup 1")
         .expect("first id");
-    let second_id = accounts::find_id(&pool, &host, 11)
+    let second_id = accounts::find_id(&pool, &host, "11")
         .await
         .expect("lookup 2")
         .expect("second id");

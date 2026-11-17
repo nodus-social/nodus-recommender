@@ -12,15 +12,16 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 /// Seed an `app_user` and its matching `account`, returning both ids.
-async fn seed_user(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> (Uuid, i64) {
+async fn seed_user(pool: &PgPool, host: &str, remote_id: i64, acct: &str) -> (Uuid, i64) {
     users::ensure_instance(pool, host).await.unwrap();
-    let user = users::upsert(pool, host, mastodon_id, acct).await.unwrap();
+    let user = users::upsert(pool, host, &remote_id.to_string(), acct)
+        .await
+        .unwrap();
     accounts::upsert_many(
         pool,
         &[NewAccount {
             instance_host: host.to_owned(),
-            mastodon_id,
-            remote_id: None,
+            remote_id: remote_id.to_string(),
             acct: acct.to_owned(),
             display_name: None,
             followers_count: 0,
@@ -33,7 +34,7 @@ async fn seed_user(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> (
     )
     .await
     .unwrap();
-    let account = accounts::find_id(pool, host, mastodon_id)
+    let account = accounts::find_id(pool, host, &remote_id.to_string())
         .await
         .unwrap()
         .unwrap();
@@ -41,14 +42,13 @@ async fn seed_user(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> (
 }
 
 /// Seed one remote account and return its local id.
-async fn seed_account(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> i64 {
+async fn seed_account(pool: &PgPool, host: &str, remote_id: i64, acct: &str) -> i64 {
     users::ensure_instance(pool, host).await.unwrap();
     accounts::upsert_many(
         pool,
         &[NewAccount {
             instance_host: host.to_owned(),
-            mastodon_id,
-            remote_id: None,
+            remote_id: remote_id.to_string(),
             acct: acct.to_owned(),
             display_name: None,
             followers_count: 0,
@@ -61,7 +61,7 @@ async fn seed_account(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -
     )
     .await
     .unwrap();
-    accounts::find_id(pool, host, mastodon_id)
+    accounts::find_id(pool, host, &remote_id.to_string())
         .await
         .unwrap()
         .unwrap()

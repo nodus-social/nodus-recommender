@@ -16,8 +16,9 @@ use std::time::{Duration, Instant};
 pub struct Identity {
     /// Normalized host name of the instance that verified this token.
     pub instance_host: String,
-    /// The account's numeric id at its own instance.
-    pub mastodon_account_id: i64,
+    /// The account's id at its own instance, kept as text because Mastodon prints
+    /// numbers and nodus prints ULIDs.
+    pub instance_account_id: String,
     /// `user@host` as the instance spells it.
     pub acct: String,
 }

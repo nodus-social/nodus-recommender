@@ -221,7 +221,7 @@ impl Handler for SyncUser {
             let subject = Subject {
                 id: material.id,
                 instance_host: material.instance_host.clone(),
-                mastodon_account_id: material.mastodon_account_id,
+                instance_account_id: material.instance_account_id,
             };
             self.walk(job, user_id, subject, material.access_token_enc)
                 .await

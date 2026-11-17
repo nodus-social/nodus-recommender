@@ -16,11 +16,10 @@ use sqlx::PgPool;
 
 /// An account with `followers` follower count; `following_count` is set separately
 /// because it is a claim about the account, not something the upsert knows.
-fn account(host: &str, mastodon_id: i64, acct: &str, followers: i32) -> NewAccount {
+fn account(host: &str, remote_id: i64, acct: &str, followers: i32) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: followers,
@@ -33,17 +32,17 @@ fn account(host: &str, mastodon_id: i64, acct: &str, followers: i32) -> NewAccou
 }
 
 /// Sets the claim the coverage gate measures against.
-async fn claim_following_count(pool: &PgPool, mastodon_id: i64, following_count: i32) {
-    sqlx::query("UPDATE account SET following_count = $2 WHERE instance_host = 'remote.test' AND mastodon_id = $1")
-        .bind(mastodon_id)
+async fn claim_following_count(pool: &PgPool, remote_id: i64, following_count: i32) {
+    sqlx::query("UPDATE account SET following_count = $2 WHERE instance_host = 'remote.test' AND remote_id = $1")
+        .bind(remote_id.to_string())
         .bind(following_count)
         .execute(pool)
         .await
         .unwrap();
 }
 
-/// Gives `mastodon_id` exactly `count` stored follows, creating the followees.
-async fn give_follows(pool: &PgPool, mastodon_id: i64, count: i32) {
+/// Gives `remote_id` exactly `count` stored follows, creating the followees.
+async fn give_follows(pool: &PgPool, remote_id: i64, count: i32) {
     users::ensure_instance(pool, "followee.test").await.unwrap();
     let mut followees = Vec::new();
     for offset in 0..count {
@@ -52,7 +51,7 @@ async fn give_follows(pool: &PgPool, mastodon_id: i64, count: i32) {
     }
     accounts::upsert_many(pool, &followees).await.unwrap();
 
-    let follower = accounts::find_id(pool, "remote.test", mastodon_id)
+    let follower = accounts::find_id(pool, "remote.test", &remote_id.to_string())
         .await
         .unwrap()
         .expect("follower exists");
@@ -160,7 +159,7 @@ async fn our_own_users_are_never_references(pool: PgPool) {
 
     // Signing up removes it: favourites and replies are available for a user, so the
     // lower-fidelity comparison must not run in parallel and inflate the count.
-    users::upsert(&pool, "remote.test", 1, "both")
+    users::upsert(&pool, "remote.test", "1", "both")
         .await
         .unwrap();
     assert_eq!(
@@ -175,7 +174,7 @@ async fn our_own_users_are_never_references(pool: PgPool) {
 async fn a_pass_replaces_previous_neighbours(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap().id;
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap().id;
     accounts::upsert_many(
         &pool,
         &[
@@ -185,11 +184,11 @@ async fn a_pass_replaces_previous_neighbours(pool: PgPool) {
     )
     .await
     .unwrap();
-    let first = accounts::find_id(&pool, "remote.test", 1)
+    let first = accounts::find_id(&pool, "remote.test", "1")
         .await
         .unwrap()
         .unwrap();
-    let second = accounts::find_id(&pool, "remote.test", 2)
+    let second = accounts::find_id(&pool, "remote.test", "2")
         .await
         .unwrap()
         .unwrap();
@@ -239,15 +238,15 @@ async fn follows_are_read_with_the_weights_idf_needs(pool: PgPool) {
     )
     .await
     .unwrap();
-    let reader = accounts::find_id(&pool, "remote.test", 1)
+    let reader = accounts::find_id(&pool, "remote.test", "1")
         .await
         .unwrap()
         .unwrap();
-    let popular = accounts::find_id(&pool, "followee.test", 10)
+    let popular = accounts::find_id(&pool, "followee.test", "10")
         .await
         .unwrap()
         .unwrap();
-    let niche = accounts::find_id(&pool, "followee.test", 11)
+    let niche = accounts::find_id(&pool, "followee.test", "11")
         .await
         .unwrap()
         .unwrap();

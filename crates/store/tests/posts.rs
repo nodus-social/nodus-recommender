@@ -13,13 +13,13 @@ const HOME: &str = "home.test";
 const REMOTE: &str = "remote.test";
 
 /// Inserts (or finds) a local account row and returns its id.
-async fn account(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> i64 {
+async fn account(pool: &PgPool, host: &str, remote_id: i64, acct: &str) -> i64 {
     sqlx::query_scalar::<_, i64>(
-        "INSERT INTO account (instance_host, mastodon_id, acct) VALUES ($1, $2, $3) \
-         ON CONFLICT (instance_host, mastodon_id) DO UPDATE SET acct = EXCLUDED.acct RETURNING id",
+        "INSERT INTO account (instance_host, remote_id, acct) VALUES ($1, $2, $3) \
+         ON CONFLICT (instance_host, remote_id) DO UPDATE SET acct = EXCLUDED.acct RETURNING id",
     )
     .bind(host)
-    .bind(mastodon_id)
+    .bind(remote_id)
     .bind(acct)
     .fetch_one(pool)
     .await
@@ -30,7 +30,7 @@ async fn account(pool: &PgPool, host: &str, mastodon_id: i64, acct: &str) -> i64
 async fn seed_me(pool: &PgPool) -> (Uuid, i64) {
     users::ensure_instance(pool, HOME).await.expect("home");
     users::ensure_instance(pool, REMOTE).await.expect("remote");
-    let user = users::upsert(pool, HOME, 1, "me").await.expect("user");
+    let user = users::upsert(pool, HOME, "1", "me").await.expect("user");
     let me = account(pool, HOME, 1, "me").await;
     (user.id, me)
 }
@@ -39,12 +39,12 @@ async fn seed_me(pool: &PgPool) -> (Uuid, i64) {
 async fn candidate_author(
     pool: &PgPool,
     user_id: Uuid,
-    mastodon_id: i64,
+    remote_id: i64,
     acct: &str,
     weight: f32,
     expired: bool,
 ) -> i64 {
-    let id = account(pool, REMOTE, mastodon_id, acct).await;
+    let id = account(pool, REMOTE, remote_id, acct).await;
     sqlx::query(
         "INSERT INTO account_affinity (user_id, account_id, affinity, expires_at) \
          VALUES ($1, $2, $3, \
@@ -63,17 +63,17 @@ async fn candidate_author(
 /// Inserts one status and returns its local id.
 async fn post(
     pool: &PgPool,
-    mastodon_id: i64,
+    remote_id: i64,
     account_id: i64,
     visibility: &str,
     age: Duration,
 ) -> i64 {
     sqlx::query_scalar::<_, i64>(
-        "INSERT INTO status (instance_host, mastodon_id, remote_id, account_id, content, visibility, created_at) \
-         VALUES ($1, $2, $2::text, $3, 'post ' || $2, $4, now() - ($5 * interval '1 second')) RETURNING id",
+        "INSERT INTO status (instance_host, remote_id, account_id, content, visibility, created_at) \
+         VALUES ($1, $2, $3, 'post ' || $2, $4, now() - ($5 * interval '1 second')) RETURNING id",
     )
     .bind(REMOTE)
-    .bind(mastodon_id)
+    .bind(remote_id)
     .bind(account_id)
     .bind(visibility)
     .bind(age.whole_seconds())
@@ -238,7 +238,7 @@ async fn a_snapshot_belongs_to_one_user(pool: PgPool) {
         .expect("read the owner's page");
     assert_eq!(mine.len(), 1, "the snapshot is readable by its owner");
 
-    let other = users::upsert(&pool, HOME, 2, "other").await.expect("u2");
+    let other = users::upsert(&pool, HOME, "2", "other").await.expect("u2");
     assert!(
         posts::page(&pool, other.id, feed_id, 0, 10)
             .await
@@ -418,12 +418,11 @@ async fn personal_candidates_decodes_shared_and_acted_authors(pool: PgPool) {
     assert!((acted_row.affinity - 0.55).abs() < 1e-6);
     assert_eq!(acted_row.account_id, acted_author);
     assert_eq!(acted_row.account_acct, "acted");
-    assert_eq!(acted_row.account_remote_id, None);
     assert_eq!(acted_row.account_display_name, None);
     assert_eq!(acted_row.account_avatar_url, None);
     assert_eq!(acted_row.account_followers_count, 0);
     assert_eq!(acted_row.account_instance_host, REMOTE);
-    assert_eq!(acted_row.account_mastodon_id, 53);
+    assert_eq!(acted_row.account_remote_id, "53");
     assert_eq!(acted_row.instance_host, REMOTE);
     assert_eq!(acted_row.status_remote_id, "610");
     assert!(!acted_row.is_reply);
@@ -432,7 +431,7 @@ async fn personal_candidates_decodes_shared_and_acted_authors(pool: PgPool) {
     assert!((shared_row.affinity - 0.41).abs() < 1e-6);
     assert_eq!(shared_row.status_remote_id, "note-602");
     assert_eq!(shared_row.account_id, shared_author);
-    assert_eq!(shared_row.account_remote_id.as_deref(), Some("origin-52"));
+    assert_eq!(shared_row.account_remote_id, "origin-52");
     assert_eq!(shared_row.content, "post 602");
     assert_eq!(shared_row.favourites_count, 7);
     assert_eq!(shared_row.reblogs_count, 3);
@@ -449,7 +448,7 @@ async fn personal_candidates_decodes_shared_and_acted_authors(pool: PgPool) {
     );
     assert_eq!(shared_row.account_followers_count, 420);
     assert_eq!(shared_row.account_instance_host, REMOTE);
-    assert_eq!(shared_row.account_mastodon_id, 52);
+    assert_eq!(shared_row.account_remote_id, "origin-52");
     assert_eq!(shared_row.instance_host, REMOTE);
     assert_eq!(
         shared_row.url.as_deref(),

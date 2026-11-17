@@ -27,8 +27,9 @@ pub(super) struct Subject {
     pub(super) id: Uuid,
     /// The instance whose tokens may be spent on this crawl.
     pub(super) instance_host: String,
-    /// The subject's remote id, which names the `following` collection.
-    pub(super) mastodon_account_id: i64,
+    /// The subject's own id, which names the `following` collection. Text because it
+    /// is a number on Mastodon and a ULID on nodus.
+    pub(super) instance_account_id: String,
 }
 
 /// One token that may be spent on the subject's graph.
@@ -111,8 +112,8 @@ impl SyncUser {
         subject: &Subject,
         is_own: bool,
     ) -> Result<i64, AttemptError> {
-        let mastodon_id = subject.mastodon_account_id;
-        if let Some(local) = accounts::find_id(&self.pool, &subject.instance_host, mastodon_id)
+        let remote_id = subject.instance_account_id.as_str();
+        if let Some(local) = accounts::find_id(&self.pool, &subject.instance_host, remote_id)
             .await
             .map_err(|e| AttemptError::Fatal(database(&e)))?
         {
@@ -131,8 +132,7 @@ impl SyncUser {
             &self.pool,
             &[NewAccount {
                 instance_host: subject.instance_host.clone(),
-                mastodon_id,
-                remote_id: None,
+                remote_id: remote_id.to_owned(),
                 acct: account.acct.clone(),
                 display_name: optional_text(&account.display_name),
                 followers_count: i32::try_from(account.followers_count).unwrap_or(i32::MAX),
@@ -146,7 +146,7 @@ impl SyncUser {
         .await
         .map_err(|e| AttemptError::Fatal(database(&e)))?;
 
-        accounts::find_id(&self.pool, &subject.instance_host, mastodon_id)
+        accounts::find_id(&self.pool, &subject.instance_host, remote_id)
             .await
             .map_err(|e| AttemptError::Fatal(database(&e)))?
             .ok_or_else(|| {

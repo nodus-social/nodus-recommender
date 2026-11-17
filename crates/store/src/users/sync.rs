@@ -65,7 +65,7 @@ pub struct SyncMaterial {
     /// Their instance, `citext` narrowed to `text`.
     pub instance_host: String,
     /// Their account id on that instance.
-    pub mastodon_account_id: i64,
+    pub instance_account_id: String,
     /// `nonce ‖ ciphertext`, opened with `TOKEN_ENC_KEY`.
     pub access_token_enc: Vec<u8>,
     /// Scopes granted when the token was stored.
@@ -100,7 +100,7 @@ pub async fn sync_material(
     user_id: Uuid,
 ) -> Result<Option<SyncMaterial>, sqlx::Error> {
     sqlx::query_as::<_, SyncMaterial>(
-        "SELECT id, instance_host::text AS instance_host, mastodon_account_id, \
+        "SELECT id, instance_host::text AS instance_host, instance_account_id, \
              access_token_enc, token_scopes \
          FROM app_user \
          WHERE id = $1 AND sync_enabled AND deleted_at IS NULL \

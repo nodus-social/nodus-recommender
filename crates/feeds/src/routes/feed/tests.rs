@@ -90,11 +90,10 @@ fn test_config() -> Config {
     }
 }
 
-fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
+fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: 100,
@@ -124,13 +123,13 @@ async fn authenticated_state_and_headers(
             key,
             Identity {
                 instance_host: host.to_owned(),
-                mastodon_account_id: 1,
+                instance_account_id: "1".to_owned(),
                 acct: acct.to_owned(),
             },
         )
         .await;
     users::ensure_instance(&pool, host).await.unwrap();
-    let user = users::upsert(&pool, host, 1, acct).await.unwrap();
+    let user = users::upsert(&pool, host, "1", acct).await.unwrap();
     let mut map = HeaderMap::new();
     map.insert(
         header::AUTHORIZATION,
@@ -174,27 +173,27 @@ async fn accounts_scores_and_sorts_candidates_before_page_selection(pool: PgPool
     .await
     .unwrap();
 
-    let dismissed = accounts::find_id(&pool, "remote.test", 10)
+    let dismissed = accounts::find_id(&pool, "remote.test", "10")
         .await
         .unwrap()
         .unwrap();
-    let fatigued = accounts::find_id(&pool, "remote.test", 11)
+    let fatigued = accounts::find_id(&pool, "remote.test", "11")
         .await
         .unwrap()
         .unwrap();
-    let plain_high = accounts::find_id(&pool, "remote.test", 12)
+    let plain_high = accounts::find_id(&pool, "remote.test", "12")
         .await
         .unwrap()
         .unwrap();
-    let plain_mid = accounts::find_id(&pool, "remote.test", 13)
+    let plain_mid = accounts::find_id(&pool, "remote.test", "13")
         .await
         .unwrap()
         .unwrap();
-    let local_fresh_lift = accounts::find_id(&pool, "home.test", 14)
+    let local_fresh_lift = accounts::find_id(&pool, "home.test", "14")
         .await
         .unwrap()
         .unwrap();
-    let local_fresh = accounts::find_id(&pool, "home.test", 15)
+    let local_fresh = accounts::find_id(&pool, "home.test", "15")
         .await
         .unwrap()
         .unwrap();
@@ -332,7 +331,7 @@ async fn accounts_enforces_instance_diversity_cap(pool: PgPool) {
 
     let mut host_by_account_id = HashMap::new();
     for i in 0..15_i64 {
-        let id = accounts::find_id(&pool, "crowded.test", 100 + i)
+        let id = accounts::find_id(&pool, "crowded.test", &format!("{}", 100 + i))
             .await
             .unwrap()
             .unwrap();
@@ -343,7 +342,7 @@ async fn accounts_enforces_instance_diversity_cap(pool: PgPool) {
     }
     for i in 0..50_i64 {
         let host = format!("alt{i:02}.test");
-        let id = accounts::find_id(&pool, &host, 200 + i)
+        let id = accounts::find_id(&pool, &host, &format!("{}", 200 + i))
             .await
             .unwrap()
             .unwrap();
@@ -414,7 +413,7 @@ async fn accounts_and_refresh_return_active_model_version(pool: PgPool) {
     .await
     .unwrap();
     for m_id in [10, 11] {
-        let id = accounts::find_id(&pool, "remote.test", m_id)
+        let id = accounts::find_id(&pool, "remote.test", &m_id.to_string())
             .await
             .unwrap()
             .unwrap();
@@ -486,12 +485,12 @@ async fn accounts_and_refresh_return_active_model_version(pool: PgPool) {
         7,
         &[
             nodus_store::feed::NewItem {
-                account_id: accounts::find_id(&pool, "remote.test", 10).await.unwrap().unwrap(),
+                account_id: accounts::find_id(&pool, "remote.test", "10").await.unwrap().unwrap(),
                 score: 0.9,
                 reason: serde_json::json!({"code": "similar_user", "support": 1, "sample_followers": []}),
             },
             nodus_store::feed::NewItem {
-                account_id: accounts::find_id(&pool, "remote.test", 11).await.unwrap().unwrap(),
+                account_id: accounts::find_id(&pool, "remote.test", "11").await.unwrap().unwrap(),
                 score: 0.8,
                 reason: serde_json::json!({"code": "similar_user", "support": 1, "sample_followers": []}),
             },

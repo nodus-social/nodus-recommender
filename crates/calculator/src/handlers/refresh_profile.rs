@@ -76,8 +76,10 @@ pub struct RefreshProfile {
 #[derive(Debug, sqlx::FromRow)]
 struct Target {
     instance_host: String,
-    mastodon_id: i64,
-    remote_id: Option<String>,
+    /// The id `instance_host` printed for the account: what the graph joins match on.
+    remote_id: String,
+    /// The id on the account's own instance, once a lookup has learned it.
+    origin_id: Option<String>,
     acct: String,
     follows_private: bool,
 }
@@ -97,7 +99,7 @@ impl RefreshProfile {
     /// Reads the account, or `None` when it has been deleted since the job was queued.
     async fn target(&self, account_id: i64) -> Result<Option<Target>, sqlx::Error> {
         sqlx::query_as::<_, Target>(
-            "SELECT instance_host::text AS instance_host, mastodon_id, remote_id, \
+            "SELECT instance_host::text AS instance_host, remote_id, origin_id, \
              acct::text AS acct, follows_private FROM account WHERE id = $1",
         )
         .bind(account_id)
@@ -127,7 +129,7 @@ impl RefreshProfile {
                 return Err(classify_origin_lookup(error));
             }
         };
-        accounts::set_remote_id(&self.pool, account_id, &remote.id)
+        accounts::set_origin_id(&self.pool, account_id, &remote.id)
             .await
             .map_err(|error| database(&error))?;
         Ok((remote.id, true))
@@ -181,11 +183,11 @@ impl RefreshProfile {
                 &bucket,
                 account_id,
                 user,
-                target.remote_id.as_deref(),
+                target.origin_id.as_deref(),
             )
             .await?
         } else {
-            (target.mastodon_id.to_string(), false)
+            (target.remote_id.clone(), false)
         };
         Ok((
             host,
@@ -276,8 +278,8 @@ impl RefreshProfile {
                 .map_err(|error| database(&error))?;
         }
 
-        let mastodon_ids: Vec<i64> = batch.iter().map(|account| account.mastodon_id).collect();
-        let resolved = accounts::resolve_ids(&self.pool, &host, &mastodon_ids)
+        let remote_ids: Vec<String> = batch.iter().map(|account| account.remote_id.clone()).collect();
+        let resolved = accounts::resolve_ids(&self.pool, &host, &remote_ids)
             .await
             .map_err(|error| database(&error))?;
 
@@ -511,17 +513,14 @@ fn classify_origin_lookup(error: InstanceError) -> JobError {
 
 /// Maps a crawled instance account into a store upsert row under `host`.
 fn to_new_account(host: &str, account: &InstanceAccount) -> Option<NewAccount> {
-    let mastodon_id = match account.id.parse::<i64>() {
-        Ok(id) => id,
-        Err(error) => {
-            warn!(id = %account.id, "skipping a non-numeric account id: {error}");
-            return None;
-        }
-    };
+    let remote_id = account.id.trim();
+    if remote_id.is_empty() {
+        warn!(acct = %account.acct, "skipping an account with an empty id");
+        return None;
+    }
     Some(NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_owned(),
         acct: account.acct.clone(),
         display_name: (!account.display_name.is_empty()).then(|| account.display_name.clone()),
         followers_count: i32::try_from(account.followers_count).unwrap_or(i32::MAX),

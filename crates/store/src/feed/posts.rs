@@ -22,7 +22,7 @@ pub struct PostCandidate {
     pub status_id: i64,
     pub status_remote_id: String,
     pub account_id: i64,
-    pub account_remote_id: Option<String>,
+    pub account_remote_id: String,
     pub affinity: f64,
     pub content: String,
     pub favourites_count: i32,
@@ -35,7 +35,6 @@ pub struct PostCandidate {
     pub account_avatar_url: Option<String>,
     pub account_followers_count: i32,
     pub account_instance_host: String,
-    pub account_mastodon_id: i64,
     pub instance_host: String,
     pub url: Option<String>,
     pub media: Value,
@@ -62,12 +61,12 @@ pub async fn candidates(
             FROM app_user u
             JOIN account a
               ON a.instance_host = u.instance_host
-             AND a.mastodon_id = u.mastodon_account_id
+             AND a.remote_id = u.instance_account_id
             WHERE u.id = $1
         )
         SELECT
             s.id                                                   AS status_id,
-            coalesce(s.remote_id, s.mastodon_id::text)                AS status_remote_id,
+            s.remote_id                AS status_remote_id,
             s.account_id                                           AS account_id,
             af.affinity::double precision                          AS affinity,
             coalesce(s.content, '')                                AS content,
@@ -76,14 +75,13 @@ pub async fn candidates(
             s.replies_count,
             s.created_at                                           AS published_at,
             s.in_reply_to_id IS NOT NULL                           AS is_reply,
-            a.remote_id                                             AS account_remote_id,
+            a.remote_id                                            AS account_remote_id,
             a.acct::text                                           AS account_acct,
             a.display_name                                         AS account_display_name,
             a.avatar_url                                           AS account_avatar_url,
             a.followers_count                                      AS account_followers_count,
             a.instance_host::text                                  AS instance_host,
             a.instance_host::text                                  AS account_instance_host,
-            a.mastodon_id                                          AS account_mastodon_id,
             s.url,
             coalesce(s.media, '[]'::jsonb)                          AS media,
             s.sensitive,
@@ -143,12 +141,12 @@ pub async fn fallback_candidates(
             FROM app_user u
             JOIN account a
               ON a.instance_host = u.instance_host
-             AND a.mastodon_id = u.mastodon_account_id
+             AND a.remote_id = u.instance_account_id
             WHERE u.id = $1
         )
         SELECT
             s.id                                                   AS status_id,
-            coalesce(s.remote_id, s.mastodon_id::text)                AS status_remote_id,
+            s.remote_id                AS status_remote_id,
             s.account_id                                           AS account_id,
             0.5::double precision                                  AS affinity,
             coalesce(s.content, '')                                AS content,
@@ -157,14 +155,13 @@ pub async fn fallback_candidates(
             s.replies_count,
             s.created_at                                           AS published_at,
             s.in_reply_to_id IS NOT NULL                           AS is_reply,
-            a.remote_id                                             AS account_remote_id,
+            a.remote_id                                            AS account_remote_id,
             a.acct::text                                           AS account_acct,
             a.display_name                                         AS account_display_name,
             a.avatar_url                                           AS account_avatar_url,
             a.followers_count                                      AS account_followers_count,
             a.instance_host::text                                  AS instance_host,
             a.instance_host::text                                  AS account_instance_host,
-            a.mastodon_id                                          AS account_mastodon_id,
             s.url,
             coalesce(s.media, '[]'::jsonb)                          AS media,
             s.sensitive,
@@ -263,11 +260,10 @@ pub struct SnapshotPost {
     pub status_id: i64,
     pub status_remote_id: String,
     pub account_acct: String,
-    pub account_remote_id: Option<String>,
+    pub account_remote_id: String,
     pub account_display_name: Option<String>,
     pub account_avatar_url: Option<String>,
     pub account_instance_host: String,
-    pub account_mastodon_id: i64,
     pub content: String,
     pub published_at: OffsetDateTime,
     pub favourites_count: i32,
@@ -296,8 +292,8 @@ pub async fn page(
             ri.score                                               AS score,
             ri.reason                                              AS reason,
             ri.status_id                                           AS status_id,
-            coalesce(s.remote_id, s.mastodon_id::text)               AS status_remote_id,
-            a.remote_id                                             AS account_remote_id,
+            s.remote_id               AS status_remote_id,
+            a.remote_id               AS account_remote_id,
             a.acct::text                                           AS account_acct,
             a.display_name                                         AS account_display_name,
             a.avatar_url                                           AS account_avatar_url,
@@ -308,7 +304,6 @@ pub async fn page(
             s.replies_count,
             a.instance_host::text                                  AS instance_host,
             a.instance_host::text                                  AS account_instance_host,
-            a.mastodon_id                                          AS account_mastodon_id,
             s.url,
             coalesce(s.media, '[]'::jsonb)                          AS media,
             s.sensitive,
@@ -352,11 +347,11 @@ pub async fn fresh_affinity_candidates(
             FROM app_user u
             JOIN account a
               ON a.instance_host = u.instance_host
-             AND a.mastodon_id = u.mastodon_account_id
+             AND a.remote_id = u.instance_account_id
             WHERE u.id = $1
         )
         SELECT
-            s.id AS status_id, coalesce(s.remote_id, s.mastodon_id::text) AS status_remote_id,
+            s.id AS status_id, s.remote_id AS status_remote_id,
             s.account_id AS account_id,
             af.affinity::double precision AS affinity,
             coalesce(s.content, '') AS content,
@@ -368,7 +363,7 @@ pub async fn fresh_affinity_candidates(
             a.avatar_url AS account_avatar_url, a.followers_count AS account_followers_count,
             a.instance_host::text AS instance_host,
             a.instance_host::text AS account_instance_host,
-            a.mastodon_id AS account_mastodon_id, s.url,
+            s.url,
             coalesce(s.media, '[]'::jsonb) AS media, s.sensitive,
             coalesce(s.spoiler_text, '') AS spoiler_text,
             coalesce(s.emojis, '[]'::jsonb) AS emojis
@@ -422,11 +417,11 @@ pub async fn recent_candidates(
             FROM app_user u
             JOIN account a
               ON a.instance_host = u.instance_host
-             AND a.mastodon_id = u.mastodon_account_id
+             AND a.remote_id = u.instance_account_id
             WHERE u.id = $1
         )
         SELECT
-            s.id AS status_id, coalesce(s.remote_id, s.mastodon_id::text) AS status_remote_id,
+            s.id AS status_id, s.remote_id AS status_remote_id,
             s.account_id AS account_id,
             0.25::double precision AS affinity,
             coalesce(s.content, '') AS content,
@@ -438,7 +433,7 @@ pub async fn recent_candidates(
             a.avatar_url AS account_avatar_url, a.followers_count AS account_followers_count,
             a.instance_host::text AS instance_host,
             a.instance_host::text AS account_instance_host,
-            a.mastodon_id AS account_mastodon_id, s.url,
+            s.url,
             coalesce(s.media, '[]'::jsonb) AS media, s.sensitive,
             coalesce(s.spoiler_text, '') AS spoiler_text,
             coalesce(s.emojis, '[]'::jsonb) AS emojis
@@ -491,7 +486,7 @@ pub async fn exploration_candidates(
             FROM app_user u
             JOIN account a
               ON a.instance_host = u.instance_host
-             AND a.mastodon_id = u.mastodon_account_id
+             AND a.remote_id = u.instance_account_id
             WHERE u.id = $1
         ),
         seed(account_id) AS (
@@ -526,7 +521,7 @@ pub async fn exploration_candidates(
             GROUP BY account_id
         )
         SELECT
-            s.id AS status_id, coalesce(s.remote_id, s.mastodon_id::text) AS status_remote_id,
+            s.id AS status_id, s.remote_id AS status_remote_id,
             s.account_id AS account_id,
             GREATEST(0.16, 0.5 - 0.08 * hop.depth)::double precision AS affinity,
             coalesce(s.content, '') AS content,
@@ -538,7 +533,7 @@ pub async fn exploration_candidates(
             a.avatar_url AS account_avatar_url, a.followers_count AS account_followers_count,
             a.instance_host::text AS instance_host,
             a.instance_host::text AS account_instance_host,
-            a.mastodon_id AS account_mastodon_id, s.url,
+            s.url,
             coalesce(s.media, '[]'::jsonb) AS media, s.sensitive,
             coalesce(s.spoiler_text, '') AS spoiler_text,
             coalesce(s.emojis, '[]'::jsonb) AS emojis
@@ -597,11 +592,11 @@ pub async fn trending_candidates(
             FROM app_user u
             JOIN account a
               ON a.instance_host = u.instance_host
-             AND a.mastodon_id = u.mastodon_account_id
+             AND a.remote_id = u.instance_account_id
             WHERE u.id = $1
         )
         SELECT
-            s.id AS status_id, coalesce(s.remote_id, s.mastodon_id::text) AS status_remote_id,
+            s.id AS status_id, s.remote_id AS status_remote_id,
             s.account_id AS account_id,
             0.3::double precision AS affinity,
             coalesce(s.content, '') AS content,
@@ -613,7 +608,7 @@ pub async fn trending_candidates(
             a.avatar_url AS account_avatar_url, a.followers_count AS account_followers_count,
             a.instance_host::text AS instance_host,
             a.instance_host::text AS account_instance_host,
-            a.mastodon_id AS account_mastodon_id, s.url,
+            s.url,
             coalesce(s.media, '[]'::jsonb) AS media, s.sensitive,
             coalesce(s.spoiler_text, '') AS spoiler_text,
             coalesce(s.emojis, '[]'::jsonb) AS emojis
@@ -672,7 +667,7 @@ pub async fn personal_candidates(
             FROM app_user
             JOIN account
               ON account.instance_host = app_user.instance_host
-             AND account.mastodon_id = app_user.mastodon_account_id
+             AND account.remote_id = app_user.instance_account_id
             WHERE app_user.id = $1
         ),
         followed AS (
@@ -715,7 +710,7 @@ pub async fn personal_candidates(
         ),
         ranked AS (
             SELECT s.id                                                   AS status_id,
-                   coalesce(s.remote_id, s.mastodon_id::text)             AS status_remote_id,
+                   s.remote_id             AS status_remote_id,
                    s.account_id                                           AS account_id,
                    best.affinity::double precision                        AS affinity,
                    coalesce(s.content, '')                                AS content,
@@ -731,7 +726,6 @@ pub async fn personal_candidates(
                    a.followers_count                                      AS account_followers_count,
                    a.instance_host::text                                  AS instance_host,
                    a.instance_host::text                                  AS account_instance_host,
-                   a.mastodon_id                                          AS account_mastodon_id,
                    s.url,
                    coalesce(s.media, '[]'::jsonb)                         AS media,
                    s.sensitive,
@@ -777,7 +771,6 @@ pub async fn personal_candidates(
                account_followers_count,
                instance_host,
                account_instance_host,
-               account_mastodon_id,
                url,
                media,
                sensitive,
@@ -811,7 +804,7 @@ pub async fn interest_texts(
             FROM app_user
             JOIN account
               ON account.instance_host = app_user.instance_host
-             AND account.mastodon_id = app_user.mastodon_account_id
+             AND account.remote_id = app_user.instance_account_id
             WHERE app_user.id = $1
         ),
         acted AS (

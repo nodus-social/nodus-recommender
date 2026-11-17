@@ -10,11 +10,10 @@ use nodus_store::{accounts, users};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
+fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: 0,
@@ -65,10 +64,10 @@ async fn counters_count_impressions_and_follows_per_account(pool: PgPool) {
     users::ensure_instance(&pool, "remote.test")
         .await
         .expect("ensure the remote instance");
-    let me = users::upsert(&pool, "home.test", 1, "me")
+    let me = users::upsert(&pool, "home.test", "1", "me")
         .await
         .expect("create the first user");
-    let other = users::upsert(&pool, "home.test", 2, "other")
+    let other = users::upsert(&pool, "home.test", "2", "other")
         .await
         .expect("create the second user");
 
@@ -84,11 +83,11 @@ async fn counters_count_impressions_and_follows_per_account(pool: PgPool) {
     .await
     .expect("seed the accounts");
 
-    let alice = accounts::find_id(&pool, "remote.test", 10)
+    let alice = accounts::find_id(&pool, "remote.test", "10")
         .await
         .expect("read the account id")
         .expect("alice exists");
-    let bob = accounts::find_id(&pool, "remote.test", 11)
+    let bob = accounts::find_id(&pool, "remote.test", "11")
         .await
         .expect("read the account id")
         .expect("bob exists");
@@ -151,7 +150,7 @@ async fn events_outside_the_window_are_ignored_and_stale_rows_are_pruned(pool: P
     users::ensure_instance(&pool, "remote.test")
         .await
         .expect("ensure the remote instance");
-    let me = users::upsert(&pool, "home.test", 1, "me")
+    let me = users::upsert(&pool, "home.test", "1", "me")
         .await
         .expect("create the first user");
 
@@ -166,11 +165,11 @@ async fn events_outside_the_window_are_ignored_and_stale_rows_are_pruned(pool: P
     .await
     .expect("seed the accounts");
 
-    let carol = accounts::find_id(&pool, "remote.test", 10)
+    let carol = accounts::find_id(&pool, "remote.test", "10")
         .await
         .expect("read the account id")
         .expect("carol exists");
-    let dave = accounts::find_id(&pool, "remote.test", 11)
+    let dave = accounts::find_id(&pool, "remote.test", "11")
         .await
         .expect("read the account id")
         .expect("dave exists");
@@ -238,10 +237,10 @@ async fn recompute_skips_accounts_without_impressions_and_clamps_follows(pool: P
     users::ensure_instance(&pool, "remote.test")
         .await
         .expect("ensure the remote instance");
-    let me = users::upsert(&pool, "home.test", 1, "me")
+    let me = users::upsert(&pool, "home.test", "1", "me")
         .await
         .expect("create first user");
-    let other = users::upsert(&pool, "home.test", 2, "other")
+    let other = users::upsert(&pool, "home.test", "2", "other")
         .await
         .expect("create second user");
 
@@ -257,11 +256,11 @@ async fn recompute_skips_accounts_without_impressions_and_clamps_follows(pool: P
     .await
     .expect("seed accounts");
 
-    let aged = accounts::find_id(&pool, "remote.test", 10)
+    let aged = accounts::find_id(&pool, "remote.test", "10")
         .await
         .expect("read account id")
         .expect("aged exists");
-    let overfollowed = accounts::find_id(&pool, "remote.test", 11)
+    let overfollowed = accounts::find_id(&pool, "remote.test", "11")
         .await
         .expect("read account id")
         .expect("overfollowed exists");

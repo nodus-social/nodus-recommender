@@ -201,7 +201,7 @@ pub async fn posts(
             item_id,
             status_id: candidate.status_id.to_string(),
             status_remote_id: candidate.status_remote_id.clone(),
-            account_remote_id: candidate.account_remote_id.clone().unwrap_or_default(),
+            account_remote_id: candidate.account_remote_id.clone(),
             account_acct: candidate.account_acct.clone(),
             account_display_name: candidate
                 .account_display_name
@@ -213,8 +213,7 @@ pub async fn posts(
                 &candidate.account_acct,
                 &candidate.instance_host,
                 &candidate.account_instance_host,
-                candidate.account_mastodon_id,
-                candidate.account_remote_id.as_deref(),
+                &candidate.account_remote_id,
             ),
             text: candidate.content.clone(),
             published_at: rfc3339(candidate.published_at),
@@ -319,7 +318,7 @@ fn post_item(row: feed::posts::SnapshotPost) -> PostItem {
         item_id: row.id,
         status_id: row.status_id.to_string(),
         status_remote_id: row.status_remote_id,
-        account_remote_id: row.account_remote_id.clone().unwrap_or_default(),
+        account_remote_id: row.account_remote_id.clone(),
         account_acct: row.account_acct.clone(),
         account_display_name: row
             .account_display_name
@@ -330,8 +329,7 @@ fn post_item(row: feed::posts::SnapshotPost) -> PostItem {
             &row.account_acct,
             &row.instance_host,
             &row.account_instance_host,
-            row.account_mastodon_id,
-            row.account_remote_id.as_deref(),
+            &row.account_remote_id,
         ),
         text: row.content,
         published_at: rfc3339(row.published_at),
@@ -353,25 +351,19 @@ fn post_item(row: feed::posts::SnapshotPost) -> PostItem {
 /// A post cached by the home instance carries the home instance's shadow id; an
 /// origin-fetched post carries the author's own id. Mixing those two is what sent
 /// readers to the wrong server.
-fn account_path(
-    acct: &str,
-    status_host: &str,
-    account_host: &str,
-    local_id: i64,
-    remote_id: Option<&str>,
-) -> String {
+fn account_path(acct: &str, status_host: &str, account_host: &str, remote_id: &str) -> String {
     if status_host == account_host {
-        return format!("/accounts/{account_host}/{local_id}");
+        return format!("/accounts/{account_host}/{remote_id}");
     }
-    remote_id.map_or_else(
-        || {
-            acct.split_once('@').map_or_else(
-                || format!("https://{account_host}/@{acct}"),
-                |(user, host)| format!("https://{host}/@{user}"),
-            )
-        },
-        |id| format!("/accounts/{status_host}/{id}"),
-    )
+    if remote_id.trim().is_empty() {
+        // Nothing was ever learned about the author's id on its own host, so the best
+        // link we can build is their handle.
+        return acct.split_once('@').map_or_else(
+            || format!("https://{account_host}/@{acct}"),
+            |(user, host)| format!("https://{host}/@{user}"),
+        );
+    }
+    format!("/accounts/{status_host}/{remote_id}")
 }
 
 /// Age of a post in hours, never negative.

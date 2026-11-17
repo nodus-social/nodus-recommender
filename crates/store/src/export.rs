@@ -52,8 +52,8 @@ pub struct ExportUser {
     pub id: Uuid,
     /// `citext` in the database, `::text` in the query.
     pub instance_host: String,
-    /// The account id on that instance (`app_user.mastodon_account_id`).
-    pub mastodon_id: i64,
+    /// The account id on that instance (`app_user.instance_account_id`), verbatim.
+    pub remote_id: String,
     pub acct: String,
     pub sync_enabled: bool,
     pub telemetry_opt_in: bool,
@@ -115,17 +115,17 @@ pub struct ExportRecommendation {
 /// removes it, and "give me my data" is exactly the request someone makes on the way
 /// out.
 const SELECT_USER: &str = "SELECT id, instance_host::text AS instance_host, \
-     mastodon_account_id AS mastodon_id, acct::text AS acct, sync_enabled, \
+     instance_account_id AS remote_id, acct::text AS acct, sync_enabled, \
      telemetry_opt_in, created_at, last_seen_at AS last_synced_at \
      FROM app_user WHERE id = $1";
 
 /// The user's account row is the one matching their own `(instance, account id)`: the
 /// follow and engagement edges are keyed on `account.id`, not on the user id.
 const SELECT_FOLLOWS: &str = "SELECT followee.acct::text AS account_acct, \
-     followee.mastodon_id AS account_id, edge.first_seen_at AS created_at \
+     followee.remote_id AS account_id, edge.first_seen_at AS created_at \
      FROM app_user AS u \
      JOIN account AS me \
-         ON me.instance_host = u.instance_host AND me.mastodon_id = u.mastodon_account_id \
+         ON me.instance_host = u.instance_host AND me.remote_id = u.instance_account_id \
      JOIN follow_edge AS edge ON edge.follower_id = me.id \
      JOIN account AS followee ON followee.id = edge.followee_id \
      WHERE u.id = $1 \
@@ -135,7 +135,7 @@ const SELECT_ENGAGEMENTS: &str = "SELECT target.acct::text AS account_acct, edge
      edge.count, edge.last_seen_at AS last_at \
      FROM app_user AS u \
      JOIN account AS me \
-         ON me.instance_host = u.instance_host AND me.mastodon_id = u.mastodon_account_id \
+         ON me.instance_host = u.instance_host AND me.remote_id = u.instance_account_id \
      JOIN engagement_edge AS edge ON edge.actor_id = me.id \
      JOIN account AS target ON target.id = edge.target_id \
      WHERE u.id = $1 \
@@ -217,7 +217,7 @@ mod tests {
             user: ExportUser {
                 id: Uuid::nil(),
                 instance_host: "example.social".to_owned(),
-                mastodon_id: 1,
+                remote_id: "1".to_owned(),
                 acct: "alice@example.social".to_owned(),
                 sync_enabled: true,
                 telemetry_opt_in: false,

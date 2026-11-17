@@ -101,8 +101,8 @@ pub struct CrawlTarget {
     pub id: i64,
     /// The instance that hosts it.
     pub instance_host: String,
-    /// The instance's own id for it.
-    pub mastodon_id: i64,
+    /// The instance's own id for it, verbatim.
+    pub remote_id: String,
 }
 
 /// Writes edges for one account, replacing what the same source saw before.
@@ -204,7 +204,7 @@ pub async fn mark_fetched(pool: &PgPool, account_id: i64) -> Result<(), sqlx::Er
 pub async fn needing_graph(pool: &PgPool, limit: i64) -> Result<Vec<CrawlTarget>, sqlx::Error> {
     sqlx::query_as::<_, CrawlTarget>(
         "SELECT DISTINCT account.id, account.instance_host::text AS instance_host, \
-         account.mastodon_id \
+         account.remote_id \
          FROM account \
          WHERE account.follows_private = false \
            AND account.moved_to_account_id IS NULL \
@@ -358,7 +358,7 @@ pub async fn owner(pool: &PgPool, account_id: i64) -> Result<Option<uuid::Uuid>,
          FROM app_user \
          JOIN account \
            ON account.instance_host = app_user.instance_host \
-          AND account.mastodon_id = app_user.mastodon_account_id \
+          AND account.remote_id = app_user.instance_account_id \
          WHERE account.id = $1 AND app_user.deleted_at IS NULL",
     )
     .bind(account_id)

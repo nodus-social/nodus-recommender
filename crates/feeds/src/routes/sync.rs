@@ -466,8 +466,7 @@ mod tests {
             pool,
             &[NewAccount {
                 instance_host: host.to_owned(),
-                mastodon_id: 500,
-                remote_id: None,
+                remote_id: "500".to_owned(),
                 acct: "candidate".to_owned(),
                 display_name: None,
                 followers_count: 10,
@@ -480,7 +479,7 @@ mod tests {
         )
         .await
         .expect("seed candidate account");
-        let candidate_id = accounts::find_id(pool, host, 500)
+        let candidate_id = accounts::find_id(pool, host, "500")
             .await
             .expect("find candidate")
             .expect("candidate exists");
@@ -548,15 +547,15 @@ mod tests {
     async fn seed_user_with_derived_state(
         pool: &PgPool,
         host: &str,
-        mastodon_id: i64,
+        remote_id: i64,
         acct: &str,
         token: &str,
     ) -> (AppState, HeaderMap, Uuid, [u8; 32]) {
         users::ensure_instance(pool, host).await.expect("instance");
-        let user = users::upsert(pool, host, mastodon_id, acct)
+        let user = users::upsert(pool, host, &(remote_id).to_string(), acct)
             .await
             .expect("user");
-        let peer = users::upsert(pool, host, mastodon_id + 1, "peer")
+        let peer = users::upsert(pool, host, &(remote_id + 1).to_string(), "peer")
             .await
             .expect("peer");
         users::set_sync_token(
@@ -586,7 +585,7 @@ mod tests {
                 key,
                 Identity {
                     instance_host: host.to_owned(),
-                    mastodon_account_id: mastodon_id,
+                    instance_account_id: remote_id.to_string(),
                     acct: acct.to_owned(),
                 },
             )

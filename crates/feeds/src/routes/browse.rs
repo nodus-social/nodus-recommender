@@ -47,7 +47,9 @@ enum BrowseKind {
 struct ValidatedBrowse {
     kind: BrowseKind,
     host: String,
-    id: i64,
+    /// Kept as text: Mastodon prints numbers and nodus prints ULIDs, and the value is
+    /// only ever echoed back to the instance that minted it.
+    id: String,
 }
 
 /// Record a visit as crawl work.
@@ -69,14 +71,14 @@ pub async fn browse(
 
     let account_id = match target.kind {
         BrowseKind::Profile { acct } => {
-            Some(ensure_account(&state, &target.host, target.id, acct.as_deref()).await?)
+            Some(ensure_account(&state, &target.host, &target.id, acct.as_deref()).await?)
         }
         BrowseKind::Status => {
             let found: Option<i64> = sqlx::query_scalar(
-                "SELECT account_id FROM status WHERE instance_host = $1 AND mastodon_id = $2",
+                "SELECT account_id FROM status WHERE instance_host = $1 AND remote_id = $2",
             )
             .bind(&target.host)
-            .bind(target.id)
+            .bind(&target.id)
             .fetch_optional(&state.pool)
             .await?;
             found
@@ -102,9 +104,15 @@ pub async fn browse(
 }
 
 fn validate(body: &Browse) -> Result<ValidatedBrowse, ApiError> {
-    let id = body.id.trim().parse::<i64>().map_err(|error| {
-        ApiError::bad_request("bad_target", format!("`{}` is not an id: {error}", body.id))
-    })?;
+    let id = body.id.trim();
+    if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(ApiError::bad_request(
+            "bad_target",
+            format!("`{id}` is not an instance id"),
+        ));
+    }
+    let id = id.to_owned();
     let host = body.host.trim();
     if !is_plausible_host(host) {
         return Err(ApiError::bad_request(
@@ -173,7 +181,7 @@ fn is_plausible_username(user: &str) -> bool {
 async fn ensure_account(
     state: &AppState,
     host: &str,
-    id: i64,
+    id: &str,
     acct: Option<&str>,
 ) -> Result<i64, ApiError> {
     if let Some(found) = accounts::find_id(&state.pool, host, id).await? {
@@ -190,8 +198,7 @@ async fn ensure_account(
         &state.pool,
         &[NewAccount {
             instance_host: host.to_owned(),
-            mastodon_id: id,
-            remote_id: Some(id.to_string()),
+            remote_id: id.to_owned(),
             acct: acct.to_owned(),
             display_name: None,
             followers_count: 0,
@@ -263,7 +270,7 @@ mod tests {
                 key,
                 Identity {
                     instance_host: host.to_owned(),
-                    mastodon_account_id: 1,
+                    instance_account_id: "1".to_owned(),
                     acct: "caller".to_owned(),
                 },
             )
@@ -291,7 +298,7 @@ mod tests {
                     acct: Some("alice@fosstodon.org".to_owned()),
                 },
                 host: "mastodon.social".to_owned(),
-                id: 42,
+                id: "42".to_owned(),
             }
         );
 
@@ -504,7 +511,7 @@ mod tests {
         assert_eq!(receipt.0.queued, 2);
 
         let stored_acct: String = sqlx::query_scalar(
-            "SELECT acct::text FROM account WHERE instance_host = 'mastodon.social' AND mastodon_id = 42",
+            "SELECT acct::text FROM account WHERE instance_host = 'mastodon.social' AND remote_id = '42'",
         )
         .fetch_one(&pool)
         .await

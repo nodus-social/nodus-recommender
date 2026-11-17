@@ -76,7 +76,7 @@ fn a_public_status_keeps_its_counts_and_visibility() {
 
     assert_eq!(mapped.instance_host, "example.social");
     assert_eq!(mapped.account_id, 7);
-    assert_eq!(mapped.mastodon_id, 110);
+    assert_eq!(mapped.remote_id, "110");
     assert_eq!(mapped.visibility, "public");
     assert_eq!(mapped.favourites_count, 3);
     assert_eq!(mapped.reblogs_count, 2);
@@ -98,10 +98,9 @@ fn an_unparseable_numeric_field_falls_back_instead_of_panicking() {
     assert_eq!(mapped.replies_count, i32::MAX);
     assert_eq!(mapped.visibility, "unlisted");
 
-    let unnamed = status("not-a-number", Visibility::Public);
-    let mapped = map_status("example.social", 7, &unnamed).expect("opaque ids are hashed");
-    assert_eq!(mapped.remote_id, "not-a-number");
-    assert_ne!(mapped.mastodon_id, 0);
+    let unnamed = status("01M7GK5K46EA1TNQRY7N0N61YW", Visibility::Public);
+    let mapped = map_status("example.social", 7, &unnamed).expect("a ULID status maps");
+    assert_eq!(mapped.remote_id, "01M7GK5K46EA1TNQRY7N0N61YW");
 }
 
 #[test]

@@ -15,8 +15,10 @@ pub struct AppUser {
     pub id: Uuid,
     /// `citext` in the database, `::text` in queries.
     pub instance_host: String,
-    /// The account id on that instance. Only meaningful together with `instance_host`.
-    pub mastodon_account_id: i64,
+    /// The account id on that instance, verbatim. Only meaningful together with
+    /// `instance_host`: it is a number on Mastodon and a ULID on nodus, so it is kept
+    /// as text and never parsed.
+    pub instance_account_id: String,
     pub acct: String,
     /// True when we hold an encrypted token and may sync in the background.
     pub sync_enabled: bool,
@@ -32,8 +34,10 @@ pub struct AppUser {
 pub struct Account {
     pub id: i64,
     pub instance_host: String,
-    pub mastodon_id: i64,
-    pub remote_id: Option<String>,
+    /// The account id as that instance printed it, verbatim.
+    pub remote_id: String,
+    /// The account id on the account's own instance, learned by lookup.
+    pub origin_id: Option<String>,
     pub acct: String,
     pub display_name: Option<String>,
     pub followers_count: i32,
@@ -80,8 +84,11 @@ pub mod job_status {
 #[derive(Debug, Clone)]
 pub struct NewAccount {
     pub instance_host: String,
-    pub mastodon_id: i64,
-    pub remote_id: Option<String>,
+    /// The account id exactly as the instance we learned this account from printed it.
+    ///
+    /// Not necessarily the origin's: a follow list on one instance names its accounts
+    /// with that instance's ids. [`Account::origin_id`] holds the other one.
+    pub remote_id: String,
     pub acct: String,
     pub display_name: Option<String>,
     pub followers_count: i32,

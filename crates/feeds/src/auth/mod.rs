@@ -71,7 +71,7 @@ pub async fn authenticate(
     let user = nodus_store::users::upsert(
         &state.pool,
         &credentials.instance_host,
-        identity.mastodon_account_id,
+        &identity.instance_account_id,
         &identity.acct,
     )
     .await?;
@@ -126,17 +126,17 @@ async fn verify_at_instance(
                 );
                 ApiError::unavailable("instance_unreachable", 30)
             })?;
-            let mashdoton_account_id = body.id.parse::<i64>().map_err(|_| {
+            let instance_account_id = opaque_id(&body.id).ok_or_else(|| {
                 tracing::warn!(
                     host = %credentials.instance_host,
                     id = %body.id,
-                    "instance returned a non-numeric account id"
+                    "instance returned an unusable account id"
                 );
                 ApiError::unavailable("instance_unreachable", 30)
             })?;
             Ok(Identity {
                 instance_host: credentials.instance_host.trim().to_ascii_lowercase(),
-                mastodon_account_id: mashdoton_account_id,
+                instance_account_id,
                 acct: body.acct,
             })
         }
@@ -162,6 +162,20 @@ async fn verify_at_instance(
             Err(ApiError::unavailable("instance_unreachable", 30))
         }
     }
+}
+
+/// The instance's own id, verbatim.
+///
+/// Opaque on purpose: Mastodon prints numbers, nodus prints ULIDs, and the value is only
+/// ever handed back to the instance that minted it. Parsing it here is what made a nodus
+/// login fail with `instance_unreachable`, so nothing is parsed; a value that cannot be
+/// an id (blank, whitespace, absurdly long) is rejected instead.
+fn opaque_id(raw: &str) -> Option<String> {
+    let id = raw.trim();
+    if id.is_empty() || id.len() > 64 || id.chars().any(char::is_whitespace) {
+        return None;
+    }
+    Some(id.to_owned())
 }
 
 #[cfg(test)]

@@ -4,11 +4,10 @@ use nodus_store::models::NewAccount;
 use nodus_store::{accounts, profiles, users};
 use sqlx::PgPool;
 
-fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
+fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: 10,
@@ -24,7 +23,7 @@ fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
 async fn needing_graph_decodes_citext_instance_host(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    users::upsert(&pool, "home.test", "1", "me").await.unwrap();
 
     accounts::upsert_many(
         &pool,
@@ -36,11 +35,11 @@ async fn needing_graph_decodes_citext_instance_host(pool: PgPool) {
     .await
     .unwrap();
 
-    let me = accounts::find_id(&pool, "home.test", 1)
+    let me = accounts::find_id(&pool, "home.test", "1")
         .await
         .unwrap()
         .expect("own account exists");
-    let alice = accounts::find_id(&pool, "remote.test", 42)
+    let alice = accounts::find_id(&pool, "remote.test", "42")
         .await
         .unwrap()
         .expect("followed account exists");
@@ -55,5 +54,5 @@ async fn needing_graph_decodes_citext_instance_host(pool: PgPool) {
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].id, alice);
     assert_eq!(targets[0].instance_host, "remote.test");
-    assert_eq!(targets[0].mastodon_id, 42);
+    assert_eq!(targets[0].remote_id, "42");
 }

@@ -18,7 +18,7 @@ pub struct PooledToken {
     /// Scopes granted when the token was stored.
     pub token_scopes: Vec<String>,
     /// The owner's account id on that instance.
-    pub mastodon_account_id: i64,
+    pub instance_account_id: String,
 }
 
 /// Claim the token for `instance_host` that should make the next request.
@@ -74,7 +74,7 @@ pub async fn pick_token(
                 ) AS candidate \
           WHERE picked.id = candidate.id \
           RETURNING picked.id AS user_id, picked.access_token_enc, picked.token_scopes, \
-                    picked.mastodon_account_id",
+                    picked.instance_account_id",
     )
     .bind(instance_host)
     .bind(excluded.as_slice())

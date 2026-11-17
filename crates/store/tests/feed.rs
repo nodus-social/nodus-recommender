@@ -12,11 +12,10 @@ use nodus_store::users;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
+fn new_account(host: &str, remote_id: i64, acct: &str) -> NewAccount {
     NewAccount {
         instance_host: host.to_owned(),
-        mastodon_id,
-        remote_id: None,
+        remote_id: remote_id.to_string(),
         acct: acct.to_owned(),
         display_name: None,
         followers_count: 0,
@@ -32,7 +31,7 @@ fn new_account(host: &str, mastodon_id: i64, acct: &str) -> NewAccount {
 async fn a_rejection_is_reported_rather_than_hidden(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
 
     accounts::upsert_many(
         &pool,
@@ -48,27 +47,27 @@ async fn a_rejection_is_reported_rather_than_hidden(pool: PgPool) {
     .await
     .unwrap();
 
-    let me = accounts::find_id(&pool, "home.test", 1)
+    let me = accounts::find_id(&pool, "home.test", "1")
         .await
         .unwrap()
         .unwrap();
-    let alice = accounts::find_id(&pool, "remote.test", 10)
+    let alice = accounts::find_id(&pool, "remote.test", "10")
         .await
         .unwrap()
         .unwrap();
-    let bob = accounts::find_id(&pool, "remote.test", 11)
+    let bob = accounts::find_id(&pool, "remote.test", "11")
         .await
         .unwrap()
         .unwrap();
-    let carol = accounts::find_id(&pool, "remote.test", 12)
+    let carol = accounts::find_id(&pool, "remote.test", "12")
         .await
         .unwrap()
         .unwrap();
-    let dave = accounts::find_id(&pool, "remote.test", 13)
+    let dave = accounts::find_id(&pool, "remote.test", "13")
         .await
         .unwrap()
         .unwrap();
-    let erin = accounts::find_id(&pool, "remote.test", 14)
+    let erin = accounts::find_id(&pool, "remote.test", "14")
         .await
         .unwrap()
         .unwrap();
@@ -178,7 +177,7 @@ async fn a_rejection_is_reported_rather_than_hidden(pool: PgPool) {
 async fn a_snapshot_is_read_back_by_cursor(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
     accounts::upsert_many(
         &pool,
         &[
@@ -188,11 +187,11 @@ async fn a_snapshot_is_read_back_by_cursor(pool: PgPool) {
     )
     .await
     .unwrap();
-    let alice = accounts::find_id(&pool, "remote.test", 10)
+    let alice = accounts::find_id(&pool, "remote.test", "10")
         .await
         .unwrap()
         .unwrap();
-    let bob = accounts::find_id(&pool, "remote.test", 11)
+    let bob = accounts::find_id(&pool, "remote.test", "11")
         .await
         .unwrap()
         .unwrap();
@@ -234,7 +233,7 @@ async fn a_snapshot_is_read_back_by_cursor(pool: PgPool) {
     assert_eq!(second[0].reason["support"], 2);
 
     // Another user's snapshot is not visible to this one.
-    let stranger = users::upsert(&pool, "home.test", 2, "other").await.unwrap();
+    let stranger = users::upsert(&pool, "home.test", "2", "other").await.unwrap();
     assert!(
         feed::page(&pool, stranger.id, feed_id, 0, 10)
             .await
@@ -253,11 +252,11 @@ async fn a_snapshot_is_read_back_by_cursor(pool: PgPool) {
 async fn a_snapshot_has_a_reuse_window_and_a_lifetime(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
     accounts::upsert_many(&pool, &[new_account("remote.test", 10, "alice")])
         .await
         .unwrap();
-    let alice = accounts::find_id(&pool, "remote.test", 10)
+    let alice = accounts::find_id(&pool, "remote.test", "10")
         .await
         .unwrap()
         .unwrap();
@@ -338,7 +337,7 @@ fn minutes(count: i64) -> sqlx::postgres::types::PgInterval {
 async fn popular_candidates_exclude_followed_and_order_by_followers(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", 1, "me").await.unwrap();
+    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap();
 
     // Four accounts, each with a distinct follower count, so the order the query
     // returns is the order the counts imply and not an accident of insertion.
@@ -367,15 +366,15 @@ async fn popular_candidates_exclude_followed_and_order_by_followers(pool: PgPool
     .await
     .unwrap();
 
-    let me = accounts::find_id(&pool, "home.test", 1)
+    let me = accounts::find_id(&pool, "home.test", "1")
         .await
         .unwrap()
         .unwrap();
-    let alice = accounts::find_id(&pool, "remote.test", 10)
+    let alice = accounts::find_id(&pool, "remote.test", "10")
         .await
         .unwrap()
         .unwrap();
-    let bob = accounts::find_id(&pool, "remote.test", 11)
+    let bob = accounts::find_id(&pool, "remote.test", "11")
         .await
         .unwrap()
         .unwrap();
