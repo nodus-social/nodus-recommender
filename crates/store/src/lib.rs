@@ -79,3 +79,37 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
         .await
         .map_err(sqlx::Error::from)
 }
+
+/// Apply the embedded migrations inside one schema, ledger included.
+///
+/// The engine owns tables named `account`, `status` and `instance`. A host that already has
+/// tables by those names — Nodus does, with different shapes — cannot share a schema, and
+/// two migration histories cannot share one `_sqlx_migrations` table either. Both therefore
+/// live under `schema`, which is created when it is missing.
+///
+/// # Errors
+///
+/// Returns a [`sqlx::Error`] if the schema cannot be created, the search path cannot be set
+/// on the connection, or a migration statement fails.
+pub async fn migrate_into(pool: &PgPool, schema: &str) -> Result<(), sqlx::Error> {
+    if !schema
+        .chars()
+        .all(|letter| letter.is_ascii_alphanumeric() || letter == '_')
+    {
+        return Err(sqlx::Error::Configuration(
+            format!("{schema:?} is not a schema name").into(),
+        ));
+    }
+
+    let mut connection = pool.acquire().await?;
+    sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query(&format!("SET search_path TO \"{schema}\", public"))
+        .execute(&mut *connection)
+        .await?;
+    sqlx::migrate!("./migrations")
+        .run(&mut *connection)
+        .await
+        .map_err(sqlx::Error::from)
+}

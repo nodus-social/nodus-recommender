@@ -1,24 +1,17 @@
-//! Entry point for the recommendation service's HTTP API.
+//! Entry point for the standalone recommendation service.
 //!
-//! Start-up order is deliberate: configuration, then the database, then the listener.
-//! A process that cannot reach Postgres exits instead of binding a port and answering
-//! 503s — the platform's restart policy is a better supervisor than a half-alive
-//! process.
+//! The API lives in the library beside this file, because the core service mounts the
+//! same router in process. This binary exists for deployments that run the engine on
+//! its own host: start-up order is configuration, then the database, then the
+//! listener, so a process that cannot reach Postgres exits instead of binding a port
+//! and answering 503s.
 
 #![forbid(unsafe_code)]
 
-mod auth;
-mod config;
-mod cursor;
-mod error;
-mod host;
-mod og;
-mod routes;
-mod state;
-
-use crate::config::Config;
-use crate::state::AppState;
 use nodus_cache::Cache;
+use nodus_feeds::config::Config;
+use nodus_feeds::routes;
+use nodus_feeds::state::AppState;
 use std::process::ExitCode;
 use std::sync::Arc;
 use tokio::net::TcpListener;

@@ -28,9 +28,28 @@ use tower_http::trace::TraceLayer;
 /// Panics only if a configured origin is not a valid header value, which
 /// [`crate::config::Config`] already validated at boot.
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/healthz", axum::routing::get(health::healthz))
-        .route("/readyz", axum::routing::get(health::readyz))
+    dressed(table(true), state)
+}
+
+/// The recommendation surface for a process that answers its own health probes.
+///
+/// The core service already reports `/healthz` and `/readyz` for the whole process,
+/// so a second pair would be a route it cannot tell apart.
+pub fn core_router(state: AppState) -> Router {
+    dressed(table(false), state)
+}
+
+/// Everything every entry point applies to the table: CORS for a separately hosted
+/// client, and one tracing layer.
+fn dressed(router: Router<AppState>, state: AppState) -> Router {
+    router
+        .layer(cors(&state))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+fn table(health_probes: bool) -> Router<AppState> {
+    let mut router = Router::new()
         .route("/api/v1/meta", axum::routing::get(meta::meta))
         .route(
             "/s/{instance}/{status}",
@@ -67,10 +86,13 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/sync/token",
             axum::routing::put(sync::put_sync_token).delete(sync::delete_sync_token),
-        )
-        .layer(cors(&state))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        );
+    if health_probes {
+        router = router
+            .route("/healthz", axum::routing::get(health::healthz))
+            .route("/readyz", axum::routing::get(health::readyz));
+    }
+    router
 }
 
 /// CORS for a separately hosted client.
