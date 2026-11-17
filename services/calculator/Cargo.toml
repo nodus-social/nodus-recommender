@@ -1,0 +1,24 @@
+[package]
+name = "nodus-calculator-server"
+description = "Standalone binary for the recommendation engine's sync worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nodus-calculator"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodus-cache = { workspace = true, features = ["redis"] }
+nodus-calculator = { workspace = true }
+nodus-store = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

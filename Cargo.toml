@@ -6,7 +6,9 @@ members = [
     "crates/calculator",
     "crates/feeds",
     "crates/cache",
-    "crates/eval",
+    "services/calculator",
+    "services/feeds",
+    "services/eval",
 ]
 
 [workspace.package]

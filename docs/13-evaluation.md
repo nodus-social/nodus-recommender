@@ -83,10 +83,10 @@ small-account rows are where the engine earns its place.
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/eval/src/split.rs` | cutoff-bounded graph load; `scoreable()` skips users with too little history or nothing to find |
-| `crates/eval/src/model.rs` | a second implementation of the candidate path over the in-memory graph, reusing `nodus-core`'s weights and damping |
-| `crates/eval/src/metrics.rs` | precision/recall, follower buckets, zero-safe division |
-| `crates/eval/src/synthetic.rs` | the planted graph and its LCG (reproducible failures) |
+| `services/eval/src/split.rs` | cutoff-bounded graph load; `scoreable()` skips users with too little history or nothing to find |
+| `services/eval/src/model.rs` | a second implementation of the candidate path over the in-memory graph, reusing `nodus-core`'s weights and damping |
+| `services/eval/src/metrics.rs` | precision/recall, follower buckets, zero-safe division |
+| `services/eval/src/synthetic.rs` | the planted graph and its LCG (reproducible failures) |
 
 The duplication is deliberate. An evaluator that called the production ranking would
 answer "what did the product decide"; this one answers "would the same arithmetic,
@@ -97,7 +97,7 @@ given only the past, have found what happened next".
 - **Follow-through in the product.** The offline protocol measures *finding*; the
   live metric (`POST /api/v1/events`, `kind = follow`) measures *persuasion*. They
   disagree, and only the second one pays.
-- **Post recommendations.** `crates/eval` ranks accounts only; posts need the same
+- **Post recommendations.** `services/eval` ranks accounts only; posts need the same
   split over `status` and `engagement_edge`.
-- **The reference-profile variant** (D31) — the reason `crates/eval` exists is that
+- **The reference-profile variant** (D31) — the reason `services/eval` exists is that
   this comparison cannot be argued, only measured.

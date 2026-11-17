@@ -1288,9 +1288,20 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "nodus-calculator-server"
+version = "0.1.0"
+dependencies = [
+ "nodus-cache",
+ "nodus-calculator",
+ "nodus-store",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1341,8 +1352,20 @@ dependencies = [
  "tokio",
  "tower-http 0.7.1",
  "tracing",
- "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "nodus-feeds-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "nodus-cache",
+ "nodus-feeds",
+ "nodus-store",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -31,7 +31,7 @@ COPY recommender/ ./recommender/
 
 RUN cargo build --release --locked \
         --manifest-path recommender/Cargo.toml \
-        -p nodus-feeds -p nodus-calculator \
+        -p nodus-feeds-server -p nodus-calculator-server \
     && strip recommender/target/release/nodus-feeds \
         recommender/target/release/nodus-calculator
 

@@ -1,0 +1,25 @@
+[package]
+name = "nodus-feeds-server"
+description = "Standalone binary for the recommendation engine's HTTP surface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nodus-feeds"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+nodus-cache = { workspace = true, features = ["redis"] }
+nodus-feeds = { path = "../../crates/feeds" }
+nodus-store = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
