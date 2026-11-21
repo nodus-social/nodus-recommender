@@ -14,9 +14,14 @@ const GRAPH_SCOPES: [&str; 1] = ["read:follows"];
 
 /// A user on [`HOST`] with a readable graph token sealed into `b"sealed"`.
 async fn seed(pool: &PgPool, remote_id: i64, token: &str) -> Uuid {
-    let user = users::upsert(pool, HOST, &remote_id.to_string(), &format!("user{remote_id}"))
-        .await
-        .expect("user");
+    let user = users::upsert(
+        pool,
+        HOST,
+        &remote_id.to_string(),
+        &format!("user{remote_id}"),
+    )
+    .await
+    .expect("user");
     users::set_sync_token(
         pool,
         user.id,

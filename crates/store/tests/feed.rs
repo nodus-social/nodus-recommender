@@ -233,7 +233,9 @@ async fn a_snapshot_is_read_back_by_cursor(pool: PgPool) {
     assert_eq!(second[0].reason["support"], 2);
 
     // Another user's snapshot is not visible to this one.
-    let stranger = users::upsert(&pool, "home.test", "2", "other").await.unwrap();
+    let stranger = users::upsert(&pool, "home.test", "2", "other")
+        .await
+        .unwrap();
     assert!(
         feed::page(&pool, stranger.id, feed_id, 0, 10)
             .await

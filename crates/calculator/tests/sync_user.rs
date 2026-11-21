@@ -216,7 +216,9 @@ async fn a_missing_scope_stops_before_the_first_request(pool: PgPool) {
     users::ensure_instance(&pool, &host)
         .await
         .expect("instance");
-    let user = users::upsert(&pool, &host, "902", "me").await.expect("user");
+    let user = users::upsert(&pool, &host, "902", "me")
+        .await
+        .expect("user");
     users::set_sync_token(
         &pool,
         user.id,

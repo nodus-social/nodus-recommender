@@ -278,7 +278,10 @@ impl RefreshProfile {
                 .map_err(|error| database(&error))?;
         }
 
-        let remote_ids: Vec<String> = batch.iter().map(|account| account.remote_id.clone()).collect();
+        let remote_ids: Vec<String> = batch
+            .iter()
+            .map(|account| account.remote_id.clone())
+            .collect();
         let resolved = accounts::resolve_ids(&self.pool, &host, &remote_ids)
             .await
             .map_err(|error| database(&error))?;

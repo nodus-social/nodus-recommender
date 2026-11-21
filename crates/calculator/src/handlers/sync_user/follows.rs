@@ -100,7 +100,10 @@ impl SyncUser {
                 .await
                 .map_err(|e| AttemptError::Fatal(database(&e)))?;
 
-            let remote_ids: Vec<String> = batch.iter().map(|account| account.remote_id.clone()).collect();
+            let remote_ids: Vec<String> = batch
+                .iter()
+                .map(|account| account.remote_id.clone())
+                .collect();
             let resolved = accounts::resolve_ids(&self.pool, &subject.instance_host, &remote_ids)
                 .await
                 .map_err(|e| AttemptError::Fatal(database(&e)))?;

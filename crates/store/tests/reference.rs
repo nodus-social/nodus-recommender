@@ -174,7 +174,10 @@ async fn our_own_users_are_never_references(pool: PgPool) {
 async fn a_pass_replaces_previous_neighbours(pool: PgPool) {
     users::ensure_instance(&pool, "home.test").await.unwrap();
     users::ensure_instance(&pool, "remote.test").await.unwrap();
-    let user = users::upsert(&pool, "home.test", "1", "me").await.unwrap().id;
+    let user = users::upsert(&pool, "home.test", "1", "me")
+        .await
+        .unwrap()
+        .id;
     accounts::upsert_many(
         &pool,
         &[

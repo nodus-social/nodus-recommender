@@ -24,7 +24,9 @@ fn candidate(account_id: i64, affinity: f32) -> AffinityRow {
 /// Seed an `app_user` and its matching `account`, returning both ids.
 async fn seed_user(pool: &PgPool, host: &str, remote_id: i64, acct: &str) -> (Uuid, i64) {
     users::ensure_instance(pool, host).await.unwrap();
-    let user = users::upsert(pool, host, &remote_id.to_string(), acct).await.unwrap();
+    let user = users::upsert(pool, host, &remote_id.to_string(), acct)
+        .await
+        .unwrap();
     accounts::upsert_many(
         pool,
         &[NewAccount {

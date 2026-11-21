@@ -81,9 +81,5 @@ pub async fn mount(
     max_connections: u32,
 ) -> Result<axum::Router, sqlx::Error> {
     let pool = prepare(database_url, max_connections).await?;
-    Ok(core_router(in_process(
-        pool,
-        base_url,
-        max_connections,
-    )))
+    Ok(core_router(in_process(pool, base_url, max_connections)))
 }
