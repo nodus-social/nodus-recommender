@@ -75,6 +75,22 @@ impl JobError {
     }
 }
 
+/// The instance refused `verb` because it does not serve `feature`.
+///
+/// This is permanent: the answer is a property of that surface, not of the moment,
+/// so a retry would spend the host's budget to be told the same thing. It is also
+/// not the same fact as `Error::Unsupported`, which says *our* transport lacks an
+/// operation and leaves the instance blameless. The reason therefore names both the
+/// feature and the verb: `job.last_error` is where the recommender reads this, and
+/// "this instance does not serve X" must stay legible as a limit of the account
+/// rather than collapsing into "the request failed".
+#[must_use]
+pub fn unsupported_capability(feature: &str, verb: &str) -> JobError {
+    JobError::permanent(format!(
+        "this instance does not serve {feature}: {verb} is unavailable"
+    ))
+}
+
 /// One kind of work.
 ///
 /// The future is boxed rather than `impl Future` so the registry can hold
@@ -244,6 +260,16 @@ mod tests {
     #[test]
     fn an_unknown_kind_is_reported_as_missing() {
         assert!(Registry::new().get("nope").is_none());
+    }
+
+    #[test]
+    fn an_unsupported_capability_is_permanent_and_names_the_surface() {
+        let error = unsupported_capability("favourites", "GET /api/v1/favourites");
+        assert!(matches!(error, JobError::Permanent(_)));
+        assert_eq!(
+            error.message(),
+            "this instance does not serve favourites: GET /api/v1/favourites is unavailable"
+        );
     }
 
     #[test]

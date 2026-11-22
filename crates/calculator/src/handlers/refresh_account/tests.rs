@@ -6,7 +6,10 @@
 
 use nodus_client_core::model::{Account, Status, Visibility};
 
-use super::fetch::map_status;
+use nodus_client_core::Error as InstanceError;
+
+use super::fetch::{classify, map_status};
+use crate::handlers::JobError;
 
 fn author() -> Account {
     Account {
@@ -25,6 +28,7 @@ fn author() -> Account {
         following_count: 0,
         statuses_count: 0,
         last_status_at: None,
+        fields: Vec::new(),
     }
 }
 
@@ -121,4 +125,19 @@ fn refresh_config_applies_budget_fraction_and_post_retention_days() {
     assert_eq!(config.budget_rate(), 2);
     assert_eq!(config.request_interval, Duration::from_millis(500));
     assert_eq!(config.post_retention_days, 45);
+}
+
+#[test]
+fn a_refused_capability_is_a_permanent_fact_about_the_instance() {
+    // The peer answered that it does not serve the surface at all; a retry buys the
+    // same answer and the reason has to survive in `job.last_error` as that fact.
+    let error = classify(InstanceError::UnsupportedCapability {
+        feature: "favourites",
+        verb: "GET /api/v1/favourites",
+    });
+    assert!(matches!(error, JobError::Permanent(_)));
+    assert_eq!(
+        error.message(),
+        "this instance does not serve favourites: GET /api/v1/favourites is unavailable"
+    );
 }

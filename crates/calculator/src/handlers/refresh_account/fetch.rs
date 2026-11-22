@@ -26,6 +26,7 @@ use tracing::{info, warn};
 
 use super::budget;
 use super::{JobError, RefreshConfig};
+use crate::handlers::unsupported_capability;
 
 /// How long to wait before retrying when the host has no usable token.
 ///
@@ -421,7 +422,7 @@ fn count(value: u64) -> i32 {
 /// would spend the host's budget on the same answer. A 429 carries the instance's
 /// own delay, which is also how `SYNC_MAX_RPS_PER_HOST` pressure surfaces — the
 /// queue reschedules instead of the worker sleeping through a full budget.
-fn classify(error: InstanceError) -> JobError {
+pub(super) fn classify(error: InstanceError) -> JobError {
     match error {
         InstanceError::RateLimited { retry_after_s } => JobError::retry(
             Duration::from_secs(u64::from(retry_after_s.max(1))),
@@ -455,6 +456,9 @@ fn classify(error: InstanceError) -> JobError {
         ),
         InstanceError::Unsupported(feature) => {
             JobError::permanent(format!("unsupported operation: {feature}"))
+        }
+        InstanceError::UnsupportedCapability { feature, verb } => {
+            unsupported_capability(feature, verb)
         }
     }
 }

@@ -37,7 +37,7 @@ use nodus_store::{accounts, affinity, users};
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
 
-use super::{Handler, JobError, SyncConfig, budget};
+use super::{Handler, JobError, SyncConfig, budget, unsupported_capability};
 
 /// How many accounts sharing an edge are compared in one pass.
 const PEER_LIMIT: i64 = 200;
@@ -505,6 +505,9 @@ fn classify_origin_lookup(error: InstanceError) -> JobError {
         InstanceError::Unsupported(feature) => {
             JobError::permanent(format!("unsupported operation: {feature}"))
         }
+        InstanceError::UnsupportedCapability { feature, verb } => {
+            unsupported_capability(feature, verb)
+        }
         InstanceError::Status { .. } | InstanceError::Transport(_) | InstanceError::Decode(_) => {
             JobError::retry(
                 BACKOFF,
@@ -556,11 +559,21 @@ fn cosine(left: &HashSet<i64>, right: &HashSet<i64>) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::cosine;
+    use super::{classify_origin_lookup, cosine};
     use std::collections::HashSet;
 
     fn set(ids: &[i64]) -> HashSet<i64> {
         ids.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_capability_the_remote_does_not_serve_is_permanent() {
+        let error = classify_origin_lookup(nodus_client_core::Error::UnsupportedCapability {
+            feature: "accounts_search",
+            verb: "GET /api/v2/search",
+        });
+        assert!(matches!(error, crate::handlers::JobError::Permanent(_)));
+        assert!(error.message().contains("does not serve accounts_search"));
     }
 
     #[test]

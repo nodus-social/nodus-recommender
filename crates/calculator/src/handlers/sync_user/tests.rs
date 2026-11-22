@@ -47,3 +47,16 @@ fn the_budget_bucket_is_the_lowercase_fingerprint_hex() {
             .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
     );
 }
+
+#[test]
+fn a_refused_capability_is_permanent_rather_than_retried() {
+    let error = transport(InstanceError::UnsupportedCapability {
+        feature: "follows",
+        verb: "GET /api/v1/accounts/:id/following",
+    });
+    assert!(matches!(error, JobError::Permanent(_)));
+    assert_eq!(
+        error.message(),
+        "this instance does not serve follows: GET /api/v1/accounts/:id/following is unavailable"
+    );
+}

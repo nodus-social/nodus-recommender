@@ -17,6 +17,7 @@ use tracing::warn;
 
 use super::accounts::{Subject, Token, optional_text};
 use super::{JobError, SyncUser, database};
+use crate::handlers::unsupported_capability;
 
 /// Why a token was retired from this run, and how long the host asked us to wait.
 #[derive(Debug)]
@@ -215,6 +216,9 @@ pub(super) fn transport(error: InstanceError) -> JobError {
         ),
         InstanceError::Unsupported(feature) => {
             JobError::permanent(format!("unsupported operation: {feature}"))
+        }
+        InstanceError::UnsupportedCapability { feature, verb } => {
+            unsupported_capability(feature, verb)
         }
     }
 }
