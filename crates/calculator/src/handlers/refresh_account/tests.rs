@@ -4,7 +4,7 @@
 //! loop over [`map_status`], so pinning the mapping pins the only rule that can
 //! silently ingest a post we must not keep.
 
-use nodus_client_core::model::{Account, Status, Visibility};
+use nodus_client_core::model::{Account, PreferenceRefusal, Status, Visibility};
 
 use nodus_client_core::Error as InstanceError;
 
@@ -19,6 +19,8 @@ fn author() -> Account {
         note: String::new(),
         avatar: String::new(),
         header: String::new(),
+        avatar_meta: None,
+        header_meta: None,
         bot: false,
         locked: false,
         discoverable: None,
@@ -140,4 +142,17 @@ fn a_refused_capability_is_a_permanent_fact_about_the_instance() {
         error.message(),
         "this instance does not serve favourites: GET /api/v1/favourites is unavailable"
     );
+}
+
+#[test]
+fn a_refused_preference_is_a_permanent_fact_about_the_request() {
+    let error = classify(InstanceError::PreferenceRefused(
+        PreferenceRefusal::InvalidValue {
+            key: "posting:default:visibility".to_owned(),
+            value: "friends-only".to_owned(),
+            allowed: "public, unlisted, private".to_owned(),
+        },
+    ));
+    assert!(matches!(error, JobError::Permanent(_)));
+    assert!(error.message().contains("posting:default:visibility"));
 }

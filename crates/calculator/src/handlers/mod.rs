@@ -21,6 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nodus_client_core::model::PreferenceRefusal;
 use nodus_store::models::Job;
 
 mod budget;
@@ -88,6 +89,22 @@ impl JobError {
 pub fn unsupported_capability(feature: &str, verb: &str) -> JobError {
     JobError::permanent(format!(
         "this instance does not serve {feature}: {verb} is unavailable"
+    ))
+}
+
+/// The instance refused a preferences write, naming the key and why.
+///
+/// Permanent for the same reason [`unsupported_capability`] is: the refusal is a
+/// statement about the request — which key the server does not know, or which value
+/// it will not accept — and repeating the same request only buys the same sentence.
+/// Unlike a refused capability, it does not say the surface is missing; it says our
+/// payload is wrong, so a retry would hide a defect as slowness. The reason quotes
+/// the refusal's own `Display` sentence rather than paraphrasing it, because the
+/// server's key and allowed values are what `job.last_error` is read for.
+#[must_use]
+pub fn preference_refused(refusal: &PreferenceRefusal) -> JobError {
+    JobError::permanent(format!(
+        "the instance refused the preference update: {refusal}"
     ))
 }
 
@@ -231,6 +248,8 @@ impl Registry {
 
 #[cfg(test)]
 mod tests {
+    use nodus_client_core::model::PreferenceRefusal;
+
     use super::*;
 
     #[derive(Debug)]
@@ -269,6 +288,18 @@ mod tests {
         assert_eq!(
             error.message(),
             "this instance does not serve favourites: GET /api/v1/favourites is unavailable"
+        );
+    }
+
+    #[test]
+    fn a_refused_preference_is_permanent_and_quotes_the_refusal() {
+        let error = preference_refused(&PreferenceRefusal::UnknownKey {
+            key: "posting:default:visibility".to_owned(),
+        });
+        assert!(matches!(error, JobError::Permanent(_)));
+        assert_eq!(
+            error.message(),
+            "the instance refused the preference update: unknown preference: posting:default:visibility"
         );
     }
 

@@ -4,6 +4,7 @@
 //! network or the database.
 
 use nodus_client_core::Error as InstanceError;
+use nodus_client_core::model::PreferenceRefusal;
 use uuid::Uuid;
 
 use super::accounts::Token;
@@ -34,6 +35,17 @@ fn a_transport_failure_is_retried() {
         transport(InstanceError::Transport("timeout".to_owned())),
         JobError::Retry { .. }
     ));
+}
+
+#[test]
+fn a_refused_preference_is_permanent_and_names_the_key() {
+    let error = transport(InstanceError::PreferenceRefused(
+        PreferenceRefusal::UnknownKey {
+            key: "posting:default:typo".to_owned(),
+        },
+    ));
+    assert!(matches!(error, JobError::Permanent(_)));
+    assert!(error.message().contains("posting:default:typo"));
 }
 
 #[test]

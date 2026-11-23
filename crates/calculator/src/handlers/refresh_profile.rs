@@ -37,7 +37,7 @@ use nodus_store::{accounts, affinity, users};
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
 
-use super::{Handler, JobError, SyncConfig, budget, unsupported_capability};
+use super::{Handler, JobError, SyncConfig, budget, preference_refused, unsupported_capability};
 
 /// How many accounts sharing an edge are compared in one pass.
 const PEER_LIMIT: i64 = 200;
@@ -508,6 +508,7 @@ fn classify_origin_lookup(error: InstanceError) -> JobError {
         InstanceError::UnsupportedCapability { feature, verb } => {
             unsupported_capability(feature, verb)
         }
+        InstanceError::PreferenceRefused(refusal) => preference_refused(&refusal),
         InstanceError::Status { .. } | InstanceError::Transport(_) | InstanceError::Decode(_) => {
             JobError::retry(
                 BACKOFF,
@@ -574,6 +575,17 @@ mod tests {
         });
         assert!(matches!(error, crate::handlers::JobError::Permanent(_)));
         assert!(error.message().contains("does not serve accounts_search"));
+    }
+
+    #[test]
+    fn a_refused_preference_is_permanent_and_names_the_key() {
+        let error = classify_origin_lookup(nodus_client_core::Error::PreferenceRefused(
+            nodus_client_core::model::PreferenceRefusal::UnknownKey {
+                key: "posting:default:language".to_owned(),
+            },
+        ));
+        assert!(matches!(error, crate::handlers::JobError::Permanent(_)));
+        assert!(error.message().contains("posting:default:language"));
     }
 
     #[test]
