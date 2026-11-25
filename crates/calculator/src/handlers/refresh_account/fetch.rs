@@ -26,7 +26,7 @@ use tracing::{info, warn};
 
 use super::budget;
 use super::{JobError, RefreshConfig};
-use crate::handlers::{preference_refused, unsupported_capability};
+use crate::handlers::{migration_refused, preference_refused, unsupported_capability};
 
 /// How long to wait before retrying when the host has no usable token.
 ///
@@ -461,6 +461,7 @@ pub(super) fn classify(error: InstanceError) -> JobError {
             unsupported_capability(feature, verb)
         }
         InstanceError::PreferenceRefused(refusal) => preference_refused(&refusal),
+        InstanceError::MigrationRefused(refusal) => migration_refused(&refusal),
     }
 }
 

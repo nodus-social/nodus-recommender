@@ -17,7 +17,7 @@ use tracing::warn;
 
 use super::accounts::{Subject, Token, optional_text};
 use super::{JobError, SyncUser, database};
-use crate::handlers::{preference_refused, unsupported_capability};
+use crate::handlers::{migration_refused, preference_refused, unsupported_capability};
 
 /// Why a token was retired from this run, and how long the host asked us to wait.
 #[derive(Debug)]
@@ -221,5 +221,6 @@ pub(super) fn transport(error: InstanceError) -> JobError {
             unsupported_capability(feature, verb)
         }
         InstanceError::PreferenceRefused(refusal) => preference_refused(&refusal),
+        InstanceError::MigrationRefused(refusal) => migration_refused(&refusal),
     }
 }

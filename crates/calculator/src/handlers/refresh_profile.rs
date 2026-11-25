@@ -37,7 +37,10 @@ use nodus_store::{accounts, affinity, users};
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
 
-use super::{Handler, JobError, SyncConfig, budget, preference_refused, unsupported_capability};
+use super::{
+    Handler, JobError, SyncConfig, budget, migration_refused, preference_refused,
+    unsupported_capability,
+};
 
 /// How many accounts sharing an edge are compared in one pass.
 const PEER_LIMIT: i64 = 200;
@@ -509,6 +512,7 @@ fn classify_origin_lookup(error: InstanceError) -> JobError {
             unsupported_capability(feature, verb)
         }
         InstanceError::PreferenceRefused(refusal) => preference_refused(&refusal),
+        InstanceError::MigrationRefused(refusal) => migration_refused(&refusal),
         InstanceError::Status { .. } | InstanceError::Transport(_) | InstanceError::Decode(_) => {
             JobError::retry(
                 BACKOFF,

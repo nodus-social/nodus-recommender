@@ -21,7 +21,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nodus_client_core::model::PreferenceRefusal;
+use nodus_client_core::model::{MigrationRefusal, PreferenceRefusal};
 use nodus_store::models::Job;
 
 mod budget;
@@ -106,6 +106,18 @@ pub fn preference_refused(refusal: &PreferenceRefusal) -> JobError {
     JobError::permanent(format!(
         "the instance refused the preference update: {refusal}"
     ))
+}
+
+/// The instance refused an account move, naming why.
+///
+/// Permanent for the same reason [`preference_refused`] is: every refusal in the SDK's
+/// vocabulary is a statement about the request — the account already moved, the target did
+/// not list the mover in its aliases, the alias list is full — and repeating the write buys
+/// the same sentence while spending the host's budget. Quoting the refusal's own `Display`
+/// text keeps `job.last_error` legible to whoever reads the queue.
+#[must_use]
+pub fn migration_refused(refusal: &MigrationRefusal) -> JobError {
+    JobError::permanent(format!("the instance refused the move: {refusal}"))
 }
 
 /// One kind of work.
